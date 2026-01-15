@@ -8,7 +8,7 @@ inputs:
     required: true
     default: ${{ github.token }}
   openai_api_key:
-    description: "OpenAI API key for OpenCode/Codex"
+    description: "OpenAI API key for OpenCode/Codex (also set as CODEX_API_KEY)"
     required: true
   opencode_bin:
     description: "CLI binary to run (opencode or codex)"

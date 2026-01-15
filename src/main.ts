@@ -6,7 +6,7 @@
 
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -318,6 +318,10 @@ function resolveExecutable(binary: string): string | null {
   return null;
 }
 
+function normalizeCliName(binary: string): string {
+  return path.basename(binary).toLowerCase().replace(/\.exe$/, "");
+}
+
 function addPath(dir: string): void {
   if (!dir) return;
   core.addPath(dir);
@@ -368,7 +372,7 @@ function installOpenCodeCli(): void {
 function ensureCliAvailable(opencodeBin: string): void {
   if (resolveExecutable(opencodeBin)) return;
 
-  const binaryName = path.basename(opencodeBin);
+  const binaryName = normalizeCliName(opencodeBin);
   if (resolveExecutable(binaryName)) return;
 
   if (binaryName === "codex") {
@@ -407,6 +411,10 @@ function buildOpenCodeEnv(userConfig: UserConfig): NodeJS.ProcessEnv {
   if (openaiKey) {
     env.OPENAI_API_KEY = openaiKey;
   }
+  const codexKey = process.env.CODEX_API_KEY || openaiKey;
+  if (codexKey) {
+    env.CODEX_API_KEY = codexKey;
+  }
   if (openaiBase) {
     env.OPENAI_API_BASE = openaiBase;
     env.OPENAI_BASE_URL = openaiBase; // 某些库使用这个变量名
@@ -437,16 +445,48 @@ function buildOpenCodeEnv(userConfig: UserConfig): NodeJS.ProcessEnv {
 }
 
 // 运行 OpenCode/Codex
-function runOpenCode(promptFile: string, userConfig: UserConfig, continueMode = false): void {
+function runOpenCode(
+  promptFile: string,
+  userConfig: UserConfig,
+  continueMode = false,
+  overridePrompt?: string
+): void {
   const opencodeBin = (core.getInput("opencode_bin") || "codex").trim();
   ensureCliAvailable(opencodeBin);
-  const prompt = fs.readFileSync(promptFile, "utf-8");
-  const continueFlag = continueMode ? "--continue" : "";
+  const prompt = overridePrompt ?? fs.readFileSync(promptFile, "utf-8");
+  const cliName = normalizeCliName(opencodeBin);
 
-  core.info(
-    `Running ${opencodeBin} ${continueFlag} with ${promptFile}`.trim()
-  );
-  execSync(`${opencodeBin} run ${continueFlag} "${prompt}"`.trim(), {
+  if (cliName === "codex") {
+    if (continueMode) {
+      core.warning("codex exec does not support --continue; running a fresh session.");
+    }
+    const args = [
+      "exec",
+      "--ask-for-approval",
+      "never",
+      "--sandbox",
+      "workspace-write",
+    ];
+    if (userConfig.model_name) {
+      args.push("--model", userConfig.model_name);
+    }
+    args.push(prompt);
+    core.info(`Running ${opencodeBin} exec with ${promptFile}`.trim());
+    execFileSync(opencodeBin, args, {
+      stdio: "inherit",
+      env: buildOpenCodeEnv(userConfig),
+    });
+    return;
+  }
+
+  const args = ["run"];
+  if (continueMode) {
+    args.push("--continue");
+  }
+  args.push(prompt);
+
+  core.info(`Running ${opencodeBin} ${continueMode ? "--continue" : ""} with ${promptFile}`.trim());
+  execFileSync(opencodeBin, args, {
     stdio: "inherit",
     env: buildOpenCodeEnv(userConfig),
   });
@@ -471,9 +511,9 @@ function verifyAndResume(config: AgentConfig, maxRetries = 5): void {
     if (attempt < maxRetries) {
       // 添加额外提示要求输出文件
       const extraPrompt = `\n\n# REQUIRED OUTPUTS\n${expectedFiles.map((f) => `- ${f}`).join("\n")}`;
-      const combinedPrompt = config.promptFile;
-      fs.appendFileSync(combinedPrompt + ".tmp", extraPrompt);
-      runOpenCode(config.promptFile, config.userConfig, true);
+      const basePrompt = fs.readFileSync(config.promptFile, "utf-8");
+      const combinedPrompt = `${basePrompt}${extraPrompt}`;
+      runOpenCode(config.promptFile, config.userConfig, true, combinedPrompt);
     }
   }
 

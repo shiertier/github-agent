@@ -38,7 +38,7 @@ jobs:
 | 输入参数         | 必填 | 默认值     | 说明                   |
 | ---------------- | ---- | ---------- | ---------------------- |
 | `github_token`   | ✅   | -          | GitHub API Token       |
-| `openai_api_key` | ✅   | -          | OpenAI API Key         |
+| `openai_api_key` | ✅   | -          | OpenAI API Key（同时导出为 `CODEX_API_KEY`） |
 | `opencode_bin`   | ❌   | `codex`    | OpenCode/Codex CLI 可执行文件（`opencode` 或 `codex`） |
 | `max_rounds`     | ❌   | `3`        | 每个 Issue/PR 最大轮数 |
 
