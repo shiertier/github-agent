@@ -452,8 +452,7 @@ function runOpenCode(promptFile, userConfig, continueMode = false, overridePromp
         }
         const args = [
             "exec",
-            "--ask-for-approval",
-            "never",
+            "--full-auto",
             "--sandbox",
             "workspace-write",
         ];

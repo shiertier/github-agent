@@ -479,8 +479,7 @@ function runOpenCode(
     }
     const args = [
       "exec",
-      "--ask-for-approval",
-      "never",
+      "--full-auto",
       "--sandbox",
       "workspace-write",
     ];
