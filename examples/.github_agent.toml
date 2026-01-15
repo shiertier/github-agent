@@ -1,0 +1,17 @@
+# GitHub Agent Configuration
+# 可选配置文件，放置于仓库根目录
+
+# LLM 模型名称
+model_name = "gpt-5.2-codex"
+
+# 最大 tokens
+max_tokens = 4096
+
+# 备选模型列表
+fallback_models = ["gpt-5.1-codex", "gpt-5.2-mini"]
+
+# 响应语言 (en / zh-CN)
+response_language = "zh-CN"
+
+# 每个 Issue/PR 最大交互轮数
+max_rounds = 5

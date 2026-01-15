@@ -1,0 +1,70 @@
+name: "GitHub Agent"
+description: "Autonomous GitHub Agent powered by OpenCode/Codex"
+author: "Your Organization"
+
+inputs:
+  github_token:
+    description: "GitHub token for API access"
+    required: true
+    default: ${{ github.token }}
+  openai_api_key:
+    description: "OpenAI API key for OpenCode"
+    required: true
+  opencode_bin:
+    description: "Path to opencode binary"
+    required: false
+    default: "opencode"
+  max_rounds:
+    description: "Maximum number of agent rounds per issue/PR"
+    required: false
+    default: "3"
+  model_name:
+    description: "LLM model name (e.g., gpt-4o, claude-sonnet-4-20250514)"
+    required: false
+    default: ""
+  max_tokens:
+    description: "Maximum tokens for LLM response"
+    required: false
+    default: ""
+  fallback_models:
+    description: "Comma-separated fallback models list"
+    required: false
+    default: ""
+  response_language:
+    description: "Response language (en/zh-CN)"
+    required: false
+    default: ""
+  anthropic_api_key:
+    description: "Anthropic API key for Claude models"
+    required: false
+    default: ""
+  anthropic_api_base:
+    description: "Anthropic API base URL (optional, for custom endpoints)"
+    required: false
+    default: ""
+  gemini_api_key:
+    description: "Google API key for Gemini models"
+    required: false
+    default: ""
+  gemini_api_base:
+    description: "Gemini API base URL (optional, for custom endpoints)"
+    required: false
+    default: ""
+  openai_api_base:
+    description: "OpenAI API base URL (optional, for custom endpoints or compatible APIs)"
+    required: false
+    default: ""
+
+outputs:
+  current_round:
+    description: "Current round number"
+  requires_coding_agent:
+    description: "Whether coding agent is needed"
+
+runs:
+  using: "node20"
+  main: "dist/main.js"
+
+branding:
+  icon: "cpu"
+  color: "purple"
