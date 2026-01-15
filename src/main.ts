@@ -12,6 +12,12 @@ import * as os from "os";
 import * as path from "path";
 import * as TOML from "@iarna/toml";
 
+const ACTION_ROOT = path.resolve(__dirname, "..");
+
+function resolvePromptPath(relativePath: string): string {
+  return path.join(ACTION_ROOT, relativePath);
+}
+
 // Agent 模式
 type AgentMode = "issue-chatter" | "issue-coder" | "pr-reviewer" | "pr-coder";
 
@@ -129,7 +135,7 @@ function detectAgentMode(): AgentConfig {
   if (eventName === "issues") {
     return {
       mode: "issue-chatter",
-      promptFile: "prompts/issue-chatter.md",
+      promptFile: resolvePromptPath("prompts/issue-chatter.md"),
       contextFile: ".github-agent-data/issue-context.md",
       maxRounds: userConfig.max_rounds,
       userConfig,
@@ -145,7 +151,9 @@ function detectAgentMode(): AgentConfig {
     if (isPR) {
       return {
         mode: hasCoder ? "pr-coder" : "pr-reviewer",
-        promptFile: hasCoder ? "prompts/pr-coder.md" : "prompts/pr-reviewer.md",
+        promptFile: hasCoder
+          ? resolvePromptPath("prompts/pr-coder.md")
+          : resolvePromptPath("prompts/pr-reviewer.md"),
         contextFile: ".github-agent-data/pr-context.md",
         maxRounds: userConfig.max_rounds,
         userConfig,
@@ -154,8 +162,8 @@ function detectAgentMode(): AgentConfig {
       return {
         mode: hasCoder ? "issue-coder" : "issue-chatter",
         promptFile: hasCoder
-          ? "prompts/issue-coder.md"
-          : "prompts/issue-chatter.md",
+          ? resolvePromptPath("prompts/issue-coder.md")
+          : resolvePromptPath("prompts/issue-chatter.md"),
         contextFile: ".github-agent-data/issue-context.md",
         maxRounds: userConfig.max_rounds,
         userConfig,
@@ -167,7 +175,7 @@ function detectAgentMode(): AgentConfig {
   if (eventName === "pull_request") {
     return {
       mode: "pr-reviewer",
-      promptFile: "prompts/pr-reviewer.md",
+      promptFile: resolvePromptPath("prompts/pr-reviewer.md"),
       contextFile: ".github-agent-data/pr-context.md",
       maxRounds: userConfig.max_rounds,
       userConfig,
@@ -337,12 +345,21 @@ function installCodexCli(): void {
   execSync("npm install -g @openai/codex", { stdio: "inherit" });
 
   try {
-    const npmBin = execSync("npm bin -g", { encoding: "utf-8" }).trim();
+    let npmBin = "";
+    try {
+      npmBin = execSync("npm bin -g", { encoding: "utf-8" }).trim();
+    } catch {
+      // npm 10+ may not support `npm bin -g`
+      const npmPrefix = execSync("npm prefix -g", { encoding: "utf-8" }).trim();
+      if (npmPrefix) {
+        npmBin = path.join(npmPrefix, "bin");
+      }
+    }
     if (npmBin) {
       addPath(npmBin);
-    } else {
-      core.warning("npm global bin path is empty; codex may not be on PATH.");
+      return;
     }
+    core.warning("npm global bin path is empty; codex may not be on PATH.");
   } catch (error) {
     core.warning(
       `Failed to determine npm global bin path: ${error instanceof Error ? error.message : String(error)}`

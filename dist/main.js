@@ -52,6 +52,10 @@ const fs = __importStar(__nccwpck_require__(9896));
 const os = __importStar(__nccwpck_require__(857));
 const path = __importStar(__nccwpck_require__(6928));
 const TOML = __importStar(__nccwpck_require__(4572));
+const ACTION_ROOT = path.resolve(__dirname, "..");
+function resolvePromptPath(relativePath) {
+    return path.join(ACTION_ROOT, relativePath);
+}
 // 验证 response_language 枚举值
 function validateResponseLanguage(value) {
     if (!value)
@@ -144,7 +148,7 @@ function detectAgentMode() {
     if (eventName === "issues") {
         return {
             mode: "issue-chatter",
-            promptFile: "prompts/issue-chatter.md",
+            promptFile: resolvePromptPath("prompts/issue-chatter.md"),
             contextFile: ".github-agent-data/issue-context.md",
             maxRounds: userConfig.max_rounds,
             userConfig,
@@ -158,7 +162,9 @@ function detectAgentMode() {
         if (isPR) {
             return {
                 mode: hasCoder ? "pr-coder" : "pr-reviewer",
-                promptFile: hasCoder ? "prompts/pr-coder.md" : "prompts/pr-reviewer.md",
+                promptFile: hasCoder
+                    ? resolvePromptPath("prompts/pr-coder.md")
+                    : resolvePromptPath("prompts/pr-reviewer.md"),
                 contextFile: ".github-agent-data/pr-context.md",
                 maxRounds: userConfig.max_rounds,
                 userConfig,
@@ -168,8 +174,8 @@ function detectAgentMode() {
             return {
                 mode: hasCoder ? "issue-coder" : "issue-chatter",
                 promptFile: hasCoder
-                    ? "prompts/issue-coder.md"
-                    : "prompts/issue-chatter.md",
+                    ? resolvePromptPath("prompts/issue-coder.md")
+                    : resolvePromptPath("prompts/issue-chatter.md"),
                 contextFile: ".github-agent-data/issue-context.md",
                 maxRounds: userConfig.max_rounds,
                 userConfig,
@@ -180,7 +186,7 @@ function detectAgentMode() {
     if (eventName === "pull_request") {
         return {
             mode: "pr-reviewer",
-            promptFile: "prompts/pr-reviewer.md",
+            promptFile: resolvePromptPath("prompts/pr-reviewer.md"),
             contextFile: ".github-agent-data/pr-context.md",
             maxRounds: userConfig.max_rounds,
             userConfig,
@@ -331,13 +337,22 @@ function installCodexCli() {
     core.info("codex not found, installing @openai/codex...");
     (0, child_process_1.execSync)("npm install -g @openai/codex", { stdio: "inherit" });
     try {
-        const npmBin = (0, child_process_1.execSync)("npm bin -g", { encoding: "utf-8" }).trim();
+        let npmBin = "";
+        try {
+            npmBin = (0, child_process_1.execSync)("npm bin -g", { encoding: "utf-8" }).trim();
+        }
+        catch {
+            // npm 10+ may not support `npm bin -g`
+            const npmPrefix = (0, child_process_1.execSync)("npm prefix -g", { encoding: "utf-8" }).trim();
+            if (npmPrefix) {
+                npmBin = path.join(npmPrefix, "bin");
+            }
+        }
         if (npmBin) {
             addPath(npmBin);
+            return;
         }
-        else {
-            core.warning("npm global bin path is empty; codex may not be on PATH.");
-        }
+        core.warning("npm global bin path is empty; codex may not be on PATH.");
     }
     catch (error) {
         core.warning(`Failed to determine npm global bin path: ${error instanceof Error ? error.message : String(error)}`);
