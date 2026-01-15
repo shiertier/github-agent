@@ -8,12 +8,12 @@ inputs:
     required: true
     default: ${{ github.token }}
   openai_api_key:
-    description: "OpenAI API key for OpenCode"
+    description: "OpenAI API key for OpenCode/Codex"
     required: true
   opencode_bin:
-    description: "Path to opencode binary"
+    description: "CLI binary to run (opencode or codex)"
     required: false
-    default: "opencode"
+    default: "codex"
   max_rounds:
     description: "Maximum number of agent rounds per issue/PR"
     required: false

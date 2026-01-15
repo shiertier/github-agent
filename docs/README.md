@@ -31,7 +31,8 @@
 
 ### 前置要求
 
-- 安装 [opencode/codex](https://github.com/opencode-ai/opencode) CLI
+- CLI 会在 Action 运行时自动安装（默认 `codex`；可选 `opencode`）
+- 如需手动安装：[`codex`](https://github.com/openai/codex) / [`opencode`](https://github.com/opencode-ai/opencode)
 - 配置 GitHub Token（需要 repo 完整权限）
 
 ### 安装

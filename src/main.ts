@@ -1,13 +1,14 @@
 /**
  * GitHub Agent Bootstrap - Main Entry Point
  *
- * 极简引导程序：配置环境 → 构建 Prompt → 调用 OpenCode
+ * 极简引导程序：配置环境 → 构建 Prompt → 调用 OpenCode/Codex
  */
 
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { execSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as TOML from "@iarna/toml";
 
@@ -281,7 +282,111 @@ function fileExists(filePath: string): boolean {
   }
 }
 
-// 构建 OpenCode 环境变量
+function isExecutable(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  if (process.platform === "win32") return true;
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutable(binary: string): string | null {
+  const hasPathSeparator = binary.includes("/") || binary.includes("\\") || binary.includes(path.sep);
+  if (hasPathSeparator) {
+    return isExecutable(binary) ? binary : null;
+  }
+
+  const pathEnv = process.env.PATH || "";
+  if (!pathEnv) return null;
+
+  const pathExts =
+    process.platform === "win32"
+      ? (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";")
+      : [""];
+
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of pathExts) {
+      const candidate = path.join(dir, `${binary}${ext}`);
+      if (isExecutable(candidate)) return candidate;
+    }
+  }
+
+  return null;
+}
+
+function addPath(dir: string): void {
+  if (!dir) return;
+  core.addPath(dir);
+  const currentPath = process.env.PATH || "";
+  const pathEntries = currentPath.split(path.delimiter);
+  if (!pathEntries.includes(dir)) {
+    process.env.PATH = `${dir}${path.delimiter}${currentPath}`;
+  }
+}
+
+function installCodexCli(): void {
+  core.info("codex not found, installing @openai/codex...");
+  execSync("npm install -g @openai/codex", { stdio: "inherit" });
+
+  try {
+    const npmBin = execSync("npm bin -g", { encoding: "utf-8" }).trim();
+    if (npmBin) {
+      addPath(npmBin);
+    } else {
+      core.warning("npm global bin path is empty; codex may not be on PATH.");
+    }
+  } catch (error) {
+    core.warning(
+      `Failed to determine npm global bin path: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+function installOpenCodeCli(): void {
+  if (process.platform === "win32") {
+    throw new Error("OpenCode install script requires bash; use a Linux/macOS runner or preinstall opencode.");
+  }
+
+  core.info("opencode not found, installing via official script...");
+  execSync(
+    "curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/refs/heads/main/install | bash",
+    { stdio: "inherit" }
+  );
+
+  const installDir = path.join(os.homedir(), ".opencode", "bin");
+  if (fs.existsSync(installDir)) {
+    addPath(installDir);
+  } else {
+    core.warning(`OpenCode install directory not found at ${installDir}; opencode may not be on PATH.`);
+  }
+}
+
+function ensureCliAvailable(opencodeBin: string): void {
+  if (resolveExecutable(opencodeBin)) return;
+
+  const binaryName = path.basename(opencodeBin);
+  if (resolveExecutable(binaryName)) return;
+
+  if (binaryName === "codex") {
+    installCodexCli();
+  } else if (binaryName === "opencode") {
+    installOpenCodeCli();
+  } else {
+    throw new Error(
+      `CLI binary not found: ${opencodeBin}. Set opencode_bin to "codex" or "opencode", or provide a valid path.`
+    );
+  }
+
+  if (!resolveExecutable(opencodeBin) && !resolveExecutable(binaryName)) {
+    throw new Error(`CLI binary "${opencodeBin}" not found after install.`);
+  }
+}
+
+// 构建 OpenCode/Codex 环境变量
 function buildOpenCodeEnv(userConfig: UserConfig): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -331,9 +436,10 @@ function buildOpenCodeEnv(userConfig: UserConfig): NodeJS.ProcessEnv {
   return env;
 }
 
-// 运行 OpenCode
+// 运行 OpenCode/Codex
 function runOpenCode(promptFile: string, userConfig: UserConfig, continueMode = false): void {
-  const opencodeBin = core.getInput("opencode_bin") || "opencode";
+  const opencodeBin = (core.getInput("opencode_bin") || "codex").trim();
+  ensureCliAvailable(opencodeBin);
   const prompt = fs.readFileSync(promptFile, "utf-8");
   const continueFlag = continueMode ? "--continue" : "";
 
@@ -576,4 +682,3 @@ async function main(): Promise<void> {
 }
 
 main();
-

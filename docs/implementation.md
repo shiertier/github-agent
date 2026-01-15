@@ -209,7 +209,7 @@ import { configureGit } from "./utils/git-config";
 
 async function run() {
   const token = core.getInput("github_token", { required: true });
-  const opencodeBin = core.getInput("opencode_bin") || "opencode/codex";
+  const opencodeBin = core.getInput("opencode_bin") || "codex";
   const workDir = core.getInput("working_directory") || ".";
 
   try {

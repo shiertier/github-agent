@@ -39,14 +39,16 @@ jobs:
 | ---------------- | ---- | ---------- | ---------------------- |
 | `github_token`   | ✅   | -          | GitHub API Token       |
 | `openai_api_key` | ✅   | -          | OpenAI API Key         |
-| `opencode_bin`   | ❌   | `opencode` | OpenCode 二进制路径    |
+| `opencode_bin`   | ❌   | `codex`    | OpenCode/Codex CLI 可执行文件（`opencode` 或 `codex`） |
 | `max_rounds`     | ❌   | `3`        | 每个 Issue/PR 最大轮数 |
 
 ## 前置要求
 
 ### 1. OpenCode/Codex CLI
 
-Action 内部已包含 OpenCode 安装步骤，无需手动安装。
+Action 运行时会根据 `opencode_bin`（`codex`/`opencode`）自动安装对应 CLI。
+默认使用 `codex`，如需使用 `opencode`，请在 `opencode_bin` 中显式设置。
+如需离线或自托管环境，可提前安装并确保在 PATH 中可用。
 
 ### 2. GitHub Token
 
@@ -84,8 +86,11 @@ github.actor != 'dependabot[bot]' &&
         with:
           node-version: "20"
 
-      - name: Install OpenCode/Codex
-        run: npm install -g opencode
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+      # If you prefer OpenCode:
+      # - name: Install OpenCode CLI
+      #   run: curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/refs/heads/main/install | bash
 
       - name: Install Agent Dependencies
         run: |

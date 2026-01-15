@@ -63,6 +63,8 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+> 默认使用 `codex` 并在运行时自动安装；如需 `opencode`，在 `with` 中设置 `opencode_bin: opencode`。
+
 ### 2. 配置 Secrets
 
 在仓库设置中添加 `OPENAI_API_KEY`。
