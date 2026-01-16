@@ -23,6 +23,27 @@ function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
+function tailFile(filePath: string, maxLines = 200, maxBytes = 128 * 1024): string {
+  try {
+    const stats = fs.statSync(filePath);
+    const size = stats.size;
+    const start = Math.max(0, size - maxBytes);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      const text = buffer.toString("utf-8");
+      const lines = text.split(/\r?\n/);
+      const tail = lines.slice(-maxLines).join("\n");
+      return tail.trim();
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
 function writeExecutable(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content, { encoding: "utf-8", mode: 0o755 });
   try {
@@ -962,56 +983,79 @@ function runOpenCode(
   ensureCliAvailable(opencodeBin);
   const prompt = overridePrompt ?? fs.readFileSync(promptFile, "utf-8");
   const cliName = normalizeCliName(opencodeBin);
+  ensureDir(path.join(process.cwd(), ".github-agent-data", "logs"));
+  const cliLog = path.join(
+    process.cwd(),
+    ".github-agent-data",
+    "logs",
+    `${cliName}-${path.basename(promptFile).replace(/[^a-zA-Z0-9_.-]/g, "_")}-${Date.now()}.log`
+  );
+  const logFd = fs.openSync(cliLog, "w");
 
-  if (cliName === "codex") {
+  try {
+    if (cliName === "codex") {
+      if (continueMode) {
+        core.warning("codex exec does not support --continue; running a fresh session.");
+      }
+      const args = [
+        "exec",
+        "--full-auto",
+        "--sandbox",
+        "workspace-write",
+      ];
+      if (userConfig.model_name) {
+        args.push("--model", userConfig.model_name);
+      }
+      const reasoningEffort = (core.getInput("model_reasoning_effort") || "").trim();
+      if (reasoningEffort) {
+        args.push("--config", `model_reasoning_effort=${reasoningEffort}`);
+      }
+      const disableResponseStorage = (core.getInput("disable_response_storage") || "").trim();
+      if (disableResponseStorage) {
+        args.push("--config", `disable_response_storage=${disableResponseStorage}`);
+      }
+      const openaiBase = (core.getInput("openai_api_base") || process.env.OPENAI_API_BASE || "").trim();
+      if (openaiBase) {
+        args.push("--config", "model_provider=codex-for-me");
+        args.push("--config", "model_providers.codex-for-me.name=codex-for-me");
+        args.push("--config", `model_providers.codex-for-me.base_url=${openaiBase}`);
+        args.push("--config", "model_providers.codex-for-me.wire_api=responses");
+        args.push("--config", "model_providers.codex-for-me.env_key=OPENAI_API_KEY");
+      }
+      args.push(prompt);
+      core.info(`Running ${opencodeBin} exec (${path.basename(promptFile)})`.trim());
+      execFileSync(opencodeBin, args, {
+        stdio: ["ignore", logFd, logFd],
+        env: buildOpenCodeEnv(userConfig),
+      });
+      return;
+    }
+
+    const args = ["run"];
     if (continueMode) {
-      core.warning("codex exec does not support --continue; running a fresh session.");
-    }
-    const args = [
-      "exec",
-      "--full-auto",
-      "--sandbox",
-      "workspace-write",
-    ];
-    if (userConfig.model_name) {
-      args.push("--model", userConfig.model_name);
-    }
-    const reasoningEffort = (core.getInput("model_reasoning_effort") || "").trim();
-    if (reasoningEffort) {
-      args.push("--config", `model_reasoning_effort=${reasoningEffort}`);
-    }
-    const disableResponseStorage = (core.getInput("disable_response_storage") || "").trim();
-    if (disableResponseStorage) {
-      args.push("--config", `disable_response_storage=${disableResponseStorage}`);
-    }
-    const openaiBase = (core.getInput("openai_api_base") || process.env.OPENAI_API_BASE || "").trim();
-    if (openaiBase) {
-      args.push("--config", "model_provider=codex-for-me");
-      args.push("--config", "model_providers.codex-for-me.name=codex-for-me");
-      args.push("--config", `model_providers.codex-for-me.base_url=${openaiBase}`);
-      args.push("--config", "model_providers.codex-for-me.wire_api=responses");
-      args.push("--config", "model_providers.codex-for-me.env_key=OPENAI_API_KEY");
+      args.push("--continue");
     }
     args.push(prompt);
-    core.info(`Running ${opencodeBin} exec with ${promptFile}`.trim());
+
+    core.info(`Running ${opencodeBin} (${path.basename(promptFile)})`.trim());
     execFileSync(opencodeBin, args, {
-      stdio: "inherit",
+      stdio: ["ignore", logFd, logFd],
       env: buildOpenCodeEnv(userConfig),
     });
-    return;
+  } catch (e) {
+    const tail = tailFile(cliLog);
+    if (tail) {
+      core.warning(`CLI log tail (${path.basename(cliLog)}):\n${tail}`);
+    }
+    throw e;
+  } finally {
+    try {
+      fs.closeSync(logFd);
+    } catch {
+      // ignore
+    }
+    core.info(`CLI output saved to ${cliLog}`);
   }
-
-  const args = ["run"];
-  if (continueMode) {
-    args.push("--continue");
-  }
-  args.push(prompt);
-
-  core.info(`Running ${opencodeBin} ${continueMode ? "--continue" : ""} with ${promptFile}`.trim());
-  execFileSync(opencodeBin, args, {
-    stdio: "inherit",
-    env: buildOpenCodeEnv(userConfig),
-  });
 }
 
 // 验证输出并重试
