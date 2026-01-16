@@ -682,13 +682,45 @@ def main() -> int:
     except Exception:
       return s
 
+  trigger_event_name = os.environ.get("GITHUB_EVENT_NAME", "") or ""
+  trigger_actor = os.environ.get("GITHUB_ACTOR", "") or ""
+  repo_owner = repo.split("/")[0] if "/" in repo else repo
+  trigger_comment = {}
+  event_path = os.environ.get("GITHUB_EVENT_PATH")
+  if event_path and os.path.exists(event_path):
+    try:
+      with open(event_path, "r", encoding="utf-8") as f:
+        event = json.load(f)
+      if isinstance(event, dict) and isinstance(event.get("comment"), dict):
+        trigger_comment = event.get("comment") or {}
+    except Exception:
+      trigger_comment = {}
+
   labels = [l.get("name") for l in issue.get("labels", []) if isinstance(l, dict) and l.get("name")]
 
   with open(out_path, "w", encoding="utf-8") as f:
     f.write(f"# Issue #{issue_number}: {str(issue.get('title','')).strip()}\\n\\n")
+    f.write("## Trigger\\n\\n")
+    if trigger_event_name:
+      f.write(f"- Event: {trigger_event_name}\\n")
+    if trigger_actor:
+      f.write(f"- Actor: {trigger_actor}\\n")
+    f.write(f"- Repo Owner: {repo_owner}\\n\\n")
+    if trigger_comment:
+      tc_author = (trigger_comment.get("user") or {}).get("login", "")
+      tc_assoc = trigger_comment.get("author_association", "")
+      tc_created = fmt_dt(trigger_comment.get("created_at"))
+      tc_body = (trigger_comment.get("body") or "").strip()
+      if tc_author or tc_body:
+        assoc_part = f" ({tc_assoc})" if tc_assoc else ""
+        f.write(f"### {tc_author}{assoc_part} @ {tc_created}\\n\\n")
+        f.write(tc_body + "\\n\\n" if tc_body else "(empty)\\n\\n")
+
+    f.write("## Issue\\n\\n")
     f.write(f"- Repo: {repo}\\n")
     f.write(f"- State: {issue.get('state','')}\\n")
     f.write(f"- Author: {(issue.get('user') or {}).get('login','')}\\n")
+    f.write(f"- Author Association: {issue.get('author_association','')}\\n")
     if labels:
       f.write(f"- Labels: {', '.join(labels)}\\n")
     f.write(f"- Created: {fmt_dt(issue.get('created_at'))}\\n")
@@ -703,8 +735,10 @@ def main() -> int:
       if not isinstance(c, dict):
         continue
       author = (c.get("user") or {}).get("login", "")
+      author_assoc = c.get("author_association", "")
       created = fmt_dt(c.get("created_at"))
-      f.write(f"### {author} @ {created}\\n\\n")
+      assoc_part = f" ({author_assoc})" if author_assoc else ""
+      f.write(f"### {author}{assoc_part} @ {created}\\n\\n")
       cb = (c.get("body") or "").strip()
       f.write(cb + "\\n\\n" if cb else "(empty)\\n\\n")
 
