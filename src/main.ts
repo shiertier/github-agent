@@ -1415,6 +1415,14 @@ async function runAutoIssueCoder(
 // 主函数
 async function main(): Promise<void> {
   try {
+    if (github.context.eventName === "issue_comment") {
+      const body = github.context.payload.comment?.body || "";
+      if (body.includes("<!-- agent:") && body.includes("<!-- agent-round:")) {
+        core.info("Skipping agent-generated issue_comment event");
+        return;
+      }
+    }
+
     const config = detectAgentMode();
     core.info(`Agent mode: ${config.mode}`);
 
