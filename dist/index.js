@@ -53,6 +53,7 @@ const os = __importStar(__nccwpck_require__(857));
 const path = __importStar(__nccwpck_require__(6928));
 const TOML = __importStar(__nccwpck_require__(4572));
 const ACTION_ROOT = path.resolve(__dirname, "..");
+const DEFAULT_BASE_BRANCH = "main";
 function resolvePromptPath(relativePath) {
     return path.join(ACTION_ROOT, relativePath);
 }
@@ -262,6 +263,101 @@ function configureGit(mode) {
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function gitOutput(args) {
+    return (0, child_process_1.execFileSync)("git", args, { encoding: "utf-8" }).trim();
+}
+function gitTryOutput(args) {
+    try {
+        return gitOutput(args);
+    }
+    catch {
+        return null;
+    }
+}
+function git(args) {
+    (0, child_process_1.execFileSync)("git", args, { stdio: "inherit" });
+}
+function getDefaultBranch() {
+    const payloadDefaultBranch = github.context.payload.repository?.default_branch;
+    if (typeof payloadDefaultBranch === "string" && payloadDefaultBranch.trim()) {
+        return payloadDefaultBranch.trim();
+    }
+    const localDefault = gitTryOutput(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+    if (localDefault) {
+        const match = localDefault.match(/^origin\/(.+)$/);
+        if (match?.[1])
+            return match[1];
+    }
+    return DEFAULT_BASE_BRANCH;
+}
+function hasUncommittedChanges() {
+    const output = gitTryOutput(["status", "--porcelain"]);
+    return !!output;
+}
+function commitAllChanges(message) {
+    if (!hasUncommittedChanges())
+        return false;
+    git(["add", "-A"]);
+    try {
+        git(["commit", "-m", message]);
+        return true;
+    }
+    catch (e) {
+        core.warning(`git commit failed: ${e instanceof Error ? e.message : String(e)}`);
+        return false;
+    }
+}
+async function gitPushWithRetry(branch, options) {
+    const maxAttempts = options?.maxAttempts ?? 3;
+    const forceWithLease = options?.forceWithLease ?? false;
+    let lastError;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const args = ["push"];
+            if (forceWithLease)
+                args.push("--force-with-lease");
+            args.push("-u", "origin", `HEAD:${branch}`);
+            git(args);
+            return;
+        }
+        catch (e) {
+            lastError = e;
+            core.warning(`git push failed (attempt ${attempt}/${maxAttempts}): ${e instanceof Error ? e.message : String(e)}`);
+            if (attempt < maxAttempts) {
+                await sleep(500 * attempt);
+            }
+        }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+function inferIssueBranchPrefix(fallbackIssueType) {
+    const commentBody = github.context.payload.comment?.body || "";
+    const normalized = commentBody.toLowerCase();
+    if (normalized.includes("@coder fix"))
+        return "ai-fix";
+    if (normalized.includes("@coder refactor"))
+        return "ai-refactor";
+    if (normalized.includes("@coder schema"))
+        return "ai-schema";
+    if (normalized.includes("@coder feat"))
+        return "ai-feat";
+    const issueType = (fallbackIssueType || "").toLowerCase();
+    if (issueType === "bug")
+        return "ai-fix";
+    return "ai-feat";
+}
+function currentBranchName() {
+    return gitTryOutput(["rev-parse", "--abbrev-ref", "HEAD"]) || "HEAD";
+}
+function ensureNonDefaultBranch(baseBranch, desiredBranch) {
+    const branch = currentBranchName();
+    if (branch !== "HEAD" && branch !== baseBranch) {
+        return branch;
+    }
+    core.info(`Creating branch ${desiredBranch} for changes (base branch is ${baseBranch})`);
+    git(["checkout", "-B", desiredBranch]);
+    return desiredBranch;
+}
 function formatErrorSummary(error) {
     const message = error instanceof Error ? error.message : String(error);
     const err = error;
@@ -451,8 +547,22 @@ def main() -> int:
     print("Missing GITHUB_REPOSITORY and failed to resolve repo.", file=sys.stderr)
     return 2
 
-  issue = json.loads(run_gh(["api", f"repos/{repo}/issues/{issue_number}"]))
-  comments = json.loads(run_gh(["api", f"repos/{repo}/issues/{issue_number}/comments", "--paginate"]))
+  issue = {}
+  comments = []
+  try:
+    issue = json.loads(run_gh(["api", f"repos/{repo}/issues/{issue_number}"]))
+    comments = json.loads(run_gh(["api", f"repos/{repo}/issues/{issue_number}/comments", "--paginate"]))
+  except Exception:
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path and os.path.exists(event_path):
+      try:
+        with open(event_path, "r", encoding="utf-8") as f:
+          event = json.load(f)
+        issue = event.get("issue") or {}
+        if event.get("comment"):
+          comments = [event.get("comment")]
+      except Exception:
+        pass
 
   out_dir = os.path.join(os.getcwd(), ".github-agent-data")
   os.makedirs(out_dir, exist_ok=True)
@@ -469,26 +579,28 @@ def main() -> int:
   labels = [l.get("name") for l in issue.get("labels", []) if isinstance(l, dict) and l.get("name")]
 
   with open(out_path, "w", encoding="utf-8") as f:
-    f.write(f"# Issue #{issue_number}: {issue.get('title','').strip()}\n\n")
-    f.write(f"- Repo: {repo}\n")
-    f.write(f"- State: {issue.get('state','')}\n")
-    f.write(f"- Author: {issue.get('user',{}).get('login','')}\n")
+    f.write(f"# Issue #{issue_number}: {str(issue.get('title','')).strip()}\\n\\n")
+    f.write(f"- Repo: {repo}\\n")
+    f.write(f"- State: {issue.get('state','')}\\n")
+    f.write(f"- Author: {(issue.get('user') or {}).get('login','')}\\n")
     if labels:
-      f.write(f"- Labels: {', '.join(labels)}\n")
-    f.write(f"- Created: {fmt_dt(issue.get('created_at'))}\n")
-    f.write(f"- Updated: {fmt_dt(issue.get('updated_at'))}\n\n")
+      f.write(f"- Labels: {', '.join(labels)}\\n")
+    f.write(f"- Created: {fmt_dt(issue.get('created_at'))}\\n")
+    f.write(f"- Updated: {fmt_dt(issue.get('updated_at'))}\\n\\n")
 
     body = (issue.get("body") or "").strip()
-    f.write("## Body\n\n")
-    f.write(body + "\n\n" if body else "(empty)\n\n")
+    f.write("## Body\\n\\n")
+    f.write(body + "\\n\\n" if body else "(empty)\\n\\n")
 
-    f.write(f"## Comments ({len(comments)})\n\n")
+    f.write(f"## Comments ({len(comments)})\\n\\n")
     for c in comments:
+      if not isinstance(c, dict):
+        continue
       author = (c.get("user") or {}).get("login", "")
       created = fmt_dt(c.get("created_at"))
-      f.write(f"### {author} @ {created}\n\n")
+      f.write(f"### {author} @ {created}\\n\\n")
       cb = (c.get("body") or "").strip()
-      f.write(cb + "\n\n" if cb else "(empty)\n\n")
+      f.write(cb + "\\n\\n" if cb else "(empty)\\n\\n")
 
   print(out_path)
   return 0
@@ -528,9 +640,25 @@ def main() -> int:
     print("Missing GITHUB_REPOSITORY and failed to resolve repo.", file=sys.stderr)
     return 2
 
-  pr = json.loads(run_gh(["api", f"repos/{repo}/pulls/{pr_number}"]))
-  issue = json.loads(run_gh(["api", f"repos/{repo}/issues/{pr_number}"]))
-  comments = json.loads(run_gh(["api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate"]))
+  pr = {}
+  issue = {}
+  comments = []
+  try:
+    pr = json.loads(run_gh(["api", f"repos/{repo}/pulls/{pr_number}"]))
+    issue = json.loads(run_gh(["api", f"repos/{repo}/issues/{pr_number}"]))
+    comments = json.loads(run_gh(["api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate"]))
+  except Exception:
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path and os.path.exists(event_path):
+      try:
+        with open(event_path, "r", encoding="utf-8") as f:
+          event = json.load(f)
+        pr = event.get("pull_request") or {}
+        issue = event.get("issue") or {}
+        if event.get("comment"):
+          comments = [event.get("comment")]
+      except Exception:
+        pass
 
   out_dir = os.path.join(os.getcwd(), ".github-agent-data")
   os.makedirs(out_dir, exist_ok=True)
@@ -547,28 +675,30 @@ def main() -> int:
   labels = [l.get("name") for l in issue.get("labels", []) if isinstance(l, dict) and l.get("name")]
 
   with open(out_path, "w", encoding="utf-8") as f:
-    f.write(f"# PR #{pr_number}: {pr.get('title','').strip()}\n\n")
-    f.write(f"- Repo: {repo}\n")
-    f.write(f"- State: {pr.get('state','')}\n")
-    f.write(f"- Author: {pr.get('user',{}).get('login','')}\n")
+    f.write(f"# PR #{pr_number}: {str(pr.get('title','')).strip()}\\n\\n")
+    f.write(f"- Repo: {repo}\\n")
+    f.write(f"- State: {pr.get('state','')}\\n")
+    f.write(f"- Author: {(pr.get('user') or {}).get('login','')}\\n")
     if labels:
-      f.write(f"- Labels: {', '.join(labels)}\n")
-    f.write(f"- Base: {pr.get('base',{}).get('ref','')}\n")
-    f.write(f"- Head: {pr.get('head',{}).get('ref','')}\n")
-    f.write(f"- Created: {fmt_dt(pr.get('created_at'))}\n")
-    f.write(f"- Updated: {fmt_dt(pr.get('updated_at'))}\n\n")
+      f.write(f"- Labels: {', '.join(labels)}\\n")
+    f.write(f"- Base: {(pr.get('base') or {}).get('ref','')}\\n")
+    f.write(f"- Head: {(pr.get('head') or {}).get('ref','')}\\n")
+    f.write(f"- Created: {fmt_dt(pr.get('created_at'))}\\n")
+    f.write(f"- Updated: {fmt_dt(pr.get('updated_at'))}\\n\\n")
 
     body = (pr.get("body") or "").strip()
-    f.write("## Body\n\n")
-    f.write(body + "\n\n" if body else "(empty)\n\n")
+    f.write("## Body\\n\\n")
+    f.write(body + "\\n\\n" if body else "(empty)\\n\\n")
 
-    f.write(f"## Comments ({len(comments)})\n\n")
+    f.write(f"## Comments ({len(comments)})\\n\\n")
     for c in comments:
+      if not isinstance(c, dict):
+        continue
       author = (c.get("user") or {}).get("login", "")
       created = fmt_dt(c.get("created_at"))
-      f.write(f"### {author} @ {created}\n\n")
+      f.write(f"### {author} @ {created}\\n\\n")
       cb = (c.get("body") or "").strip()
-      f.write(cb + "\n\n" if cb else "(empty)\n\n")
+      f.write(cb + "\\n\\n" if cb else "(empty)\\n\\n")
 
   print(out_path)
   return 0
@@ -947,6 +1077,51 @@ async function postProcessPRReviewer(round) {
         core.setOutput("requires_coding_agent", response.requires_coding_agent);
     }
 }
+async function ensureIssuePullRequest(octokit, owner, repo, issueNumber, headBranch, baseBranch) {
+    const existing = await withRetry("pulls.list", () => octokit.rest.pulls.list({
+        owner,
+        repo,
+        state: "open",
+        head: `${owner}:${headBranch}`,
+        per_page: 5,
+    }));
+    if (existing.data.length > 0) {
+        const pr = existing.data[0];
+        return pr.html_url ? { number: pr.number, url: pr.html_url } : null;
+    }
+    const issueTitle = (github.context.payload.issue?.title || "").trim() ||
+        `Issue #${issueNumber}`;
+    const prefix = headBranch.startsWith("ai-fix/") ? "fix" : "feat";
+    const title = `${prefix}: ${issueTitle}`.slice(0, 120);
+    const body = `Closes #${issueNumber}`;
+    const created = await withRetry("pulls.create", () => octokit.rest.pulls.create({
+        owner,
+        repo,
+        title,
+        head: headBranch,
+        base: baseBranch,
+        body,
+    }));
+    return created.data.html_url
+        ? { number: created.data.number, url: created.data.html_url }
+        : null;
+}
+async function pushIssueCoderChangesAndCreatePr(octokit, owner, repo, issueNumber) {
+    const baseBranch = getDefaultBranch();
+    commitAllChanges(`chore(agent): update for #${issueNumber}`);
+    const aheadCountText = gitTryOutput(["rev-list", "--count", `origin/${baseBranch}..HEAD`]);
+    const aheadCount = aheadCountText ? parseInt(aheadCountText, 10) : 0;
+    if (!Number.isFinite(aheadCount) || aheadCount <= 0) {
+        core.info("No new commits to push");
+        return {};
+    }
+    const chatterIssueType = readIssueChatterResponse()?.issue_type;
+    const desiredBranch = `${inferIssueBranchPrefix(chatterIssueType)}/issue-${issueNumber}-auto`;
+    const branch = ensureNonDefaultBranch(baseBranch, desiredBranch);
+    await gitPushWithRetry(branch, { forceWithLease: branch.startsWith("ai-") });
+    const pr = await ensureIssuePullRequest(octokit, owner, repo, issueNumber, branch, baseBranch);
+    return { branch, prUrl: pr?.url };
+}
 // 后处理：Coder (Issue/PR)
 async function postProcessCoder(mode, round) {
     const token = core.getInput("github_token") || process.env.GITHUB_TOKEN;
@@ -964,7 +1139,22 @@ async function postProcessCoder(mode, round) {
     if (fileExists(summaryFile)) {
         const content = fs.readFileSync(summaryFile, "utf-8");
         const agentName = mode === "pr-coder" ? "pr-coder-agent" : "issue-coder-agent";
-        const body = `${content}\n\n<!-- agent:${agentName} -->\n<!-- agent-round:${round} -->`;
+        let prefix = "";
+        if (mode === "issue-coder") {
+            try {
+                const result = await pushIssueCoderChangesAndCreatePr(octokit, owner, repo, issueNumber);
+                if (result.prUrl) {
+                    prefix = `已创建 PR: ${result.prUrl}\n\n`;
+                }
+                else if (result.branch) {
+                    prefix = `已推送分支: ${result.branch}\n\n`;
+                }
+            }
+            catch (e) {
+                core.warning(`Failed to push/create PR: ${e instanceof Error ? e.message : String(e)}`);
+            }
+        }
+        const body = `${prefix}${content}\n\n<!-- agent:${agentName} -->\n<!-- agent-round:${round} -->`;
         await withRetry("issues.createComment", () => octokit.rest.issues.createComment({
             owner,
             repo,
