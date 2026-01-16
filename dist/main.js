@@ -536,7 +536,9 @@ const EXPECTED_OUTPUTS = {
     "issue-coder": [".github-agent-data/issue-reply.md"],
     "pr-reviewer": [
         ".github-agent-data/review-response.json",
-        ".github-agent-data/review-reply.md",
+        ".github-agent-data/review-summary.md",
+        ".github-agent-data/review-result.md",
+        ".github-agent-data/review-suggestions.md",
     ],
     "pr-coder": [".github-agent-data/pr-update-summary.md"],
 };
@@ -1134,14 +1136,21 @@ async function postProcessPRReviewer(round) {
         github.context.payload.issue?.number;
     if (!prNumber)
         return;
-    // 发布 Review
-    const replyFile = ".github-agent-data/review-reply.md";
     const jsonFile = ".github-agent-data/review-response.json";
-    if (fileExists(replyFile) && fileExists(jsonFile)) {
-        const replyContent = fs.readFileSync(replyFile, "utf-8");
+    const summaryFile = ".github-agent-data/review-summary.md";
+    const resultFile = ".github-agent-data/review-result.md";
+    const suggestionsFile = ".github-agent-data/review-suggestions.md";
+    const legacyReplyFile = ".github-agent-data/review-reply.md";
+    const hasNewArtifacts = fileExists(jsonFile) &&
+        fileExists(summaryFile) &&
+        fileExists(resultFile) &&
+        fileExists(suggestionsFile);
+    if (!hasNewArtifacts) {
+        if (!fileExists(jsonFile) || !fileExists(legacyReplyFile))
+            return;
+        const replyContent = fs.readFileSync(legacyReplyFile, "utf-8");
         const response = JSON.parse(fs.readFileSync(jsonFile, "utf-8"));
         const body = `${replyContent}\n\n<!-- agent:pr-reviewer-agent -->\n<!-- agent-round:${round} -->`;
-        // 映射 verdict 到 GitHub review event
         const eventMap = {
             approve: "APPROVE",
             request_changes: "REQUEST_CHANGES",
@@ -1177,37 +1186,96 @@ async function postProcessPRReviewer(round) {
             }
         }
         core.setOutput("requires_coding_agent", response.requires_coding_agent);
-        if (response.requires_coding_agent) {
-            const keyIssues = Array.isArray(response.key_issues) ? response.key_issues : [];
-            const issueLines = keyIssues.slice(0, 5).map((issue) => {
-                const file = typeof issue?.file === "string" ? issue.file : "";
-                const startLine = Number.isFinite(issue?.start_line) ? issue.start_line : undefined;
-                const title = typeof issue?.title === "string" ? issue.title : "";
-                const severity = typeof issue?.severity === "string" ? issue.severity : "";
-                const location = file ? `${file}${startLine ? `:${startLine}` : ""}` : "(unknown)";
-                const parts = [location, title].filter(Boolean).join(" ");
-                const suffix = severity ? ` [${severity}]` : "";
-                return `> - ${parts}${suffix}`.trim();
-            });
-            const coderCommentBody = [
-                "@coder",
-                "",
-                "> 按下面这些点修复并 push 到当前 PR 分支：",
-                ...(issueLines.length > 0 ? issueLines : ["> - N/A"]),
-                "",
-                "<!-- agent:pr-reviewer-agent -->",
-                `<!-- agent-round:${round} -->`,
-                "<!-- agent-trigger:coder -->",
-            ].join("\n");
-            await withRetry("issues.createComment(pr-coder-trigger)", () => octokit.rest.issues.createComment({
+        return;
+    }
+    const response = JSON.parse(fs.readFileSync(jsonFile, "utf-8"));
+    const summaryContent = fs.readFileSync(summaryFile, "utf-8").trim();
+    const resultContent = fs.readFileSync(resultFile, "utf-8").trim();
+    const suggestionsContent = fs.readFileSync(suggestionsFile, "utf-8").trim();
+    const isZh = /[\u4e00-\u9fff]/.test(`${summaryContent}\n${resultContent}\n${suggestionsContent}`);
+    // 1) Summary comment
+    const summaryBody = `${summaryContent}\n\n<!-- agent:pr-reviewer-agent -->\n<!-- agent-round:${round} -->\n<!-- agent-part:summary -->`;
+    await withRetry("issues.createComment(pr-review-summary)", () => octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: summaryBody,
+    }));
+    core.info("Posted pr-reviewer summary comment");
+    // 2) Review result (as PR review)
+    const reviewBody = `${resultContent}\n\n<!-- agent:pr-reviewer-agent -->\n<!-- agent-round:${round} -->\n<!-- agent-part:result -->`;
+    const eventMap = {
+        approve: "APPROVE",
+        request_changes: "REQUEST_CHANGES",
+        comment: "COMMENT",
+    };
+    const event = eventMap[response.verdict] || "COMMENT";
+    try {
+        await withRetry("pulls.createReview", () => octokit.rest.pulls.createReview({
+            owner,
+            repo,
+            pull_number: prNumber,
+            body: reviewBody,
+            event,
+        }));
+        core.info(`Posted PR review: ${event}`);
+    }
+    catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        const isSelfReviewError = /own pull request/i.test(message);
+        if (isSelfReviewError && (event === "APPROVE" || event === "REQUEST_CHANGES")) {
+            core.warning(`Cannot submit ${event} on own PR; falling back to COMMENT`);
+            await withRetry("pulls.createReview(comment)", () => octokit.rest.pulls.createReview({
                 owner,
                 repo,
-                issue_number: prNumber,
-                body: coderCommentBody,
+                pull_number: prNumber,
+                body: reviewBody,
+                event: "COMMENT",
             }));
-            core.info("Posted pr-coder trigger comment");
+            core.info("Posted PR review: COMMENT");
+        }
+        else {
+            throw e;
         }
     }
+    core.setOutput("requires_coding_agent", response.requires_coding_agent);
+    // 3) Suggestions comment (+ optional coder trigger)
+    const keyIssues = Array.isArray(response.key_issues) ? response.key_issues : [];
+    const issueLines = keyIssues.slice(0, 5).map((issue) => {
+        const file = typeof issue?.file === "string" ? issue.file : "";
+        const startLine = Number.isFinite(issue?.start_line) ? issue.start_line : undefined;
+        const title = typeof issue?.title === "string" ? issue.title : "";
+        const severity = typeof issue?.severity === "string" ? issue.severity : "";
+        const location = file ? `${file}${startLine ? `:${startLine}` : ""}` : "(unknown)";
+        const parts = [location, title].filter(Boolean).join(" ");
+        const suffix = severity ? ` [${severity}]` : "";
+        return `> - ${parts}${suffix}`.trim();
+    });
+    const suggestionsLines = [];
+    suggestionsLines.push(suggestionsContent || "N/A");
+    if (response.requires_coding_agent) {
+        const instructionLine = isZh
+            ? "> 按下面这些点修复并 push 到当前 PR 分支："
+            : "> Fix the following issues and push to the current PR branch:";
+        suggestionsLines.push("");
+        suggestionsLines.push("@coder");
+        suggestionsLines.push("");
+        suggestionsLines.push(instructionLine);
+        suggestionsLines.push(...(issueLines.length > 0 ? issueLines : ["> - N/A"]));
+        suggestionsLines.push("");
+        suggestionsLines.push("<!-- agent-trigger:coder -->");
+    }
+    suggestionsLines.push("");
+    suggestionsLines.push("<!-- agent:pr-reviewer-agent -->");
+    suggestionsLines.push(`<!-- agent-round:${round} -->`);
+    suggestionsLines.push("<!-- agent-part:suggestions -->");
+    await withRetry("issues.createComment(pr-review-suggestions)", () => octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: suggestionsLines.join("\n"),
+    }));
+    core.info("Posted pr-reviewer suggestions comment");
 }
 async function ensureIssuePullRequest(octokit, owner, repo, issueNumber, headBranch, baseBranch) {
     const existing = await withRetry("pulls.list", () => octokit.rest.pulls.list({

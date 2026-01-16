@@ -86,7 +86,9 @@ PR 编号从环境变量 `PR_NUMBER` 获取。
 **Output Artifacts**:
 
 - JSON 结果: `./.github-agent-data/review-response.json`
-- Markdown 回复: `./.github-agent-data/review-reply.md`
+- Markdown（综合摘要）: `./.github-agent-data/review-summary.md`
+- Markdown（Review 结论）: `./.github-agent-data/review-result.md`
+- Markdown（修改建议）: `./.github-agent-data/review-suggestions.md`
 
 ## Output Specifications
 
@@ -127,46 +129,49 @@ class ReviewResponse(BaseModel):
     summary: str = Field(description="对 PR 的整体评价摘要，1-2 句话。")
     key_issues: List[KeyIssue] = Field(description="发现的关键问题列表（0-5 个）。按严重程度排序。")
 
-    reply_content: str = Field(description="同 review-reply.md 中的内容，必须一致。")
+    reply_content: str = Field(description="同 review-result.md 中的内容，必须一致。")
 
     requires_coding_agent: bool = Field(description="是否需要唤醒 PR Coder 来修复问题？如果发现 CRITICAL 或 MAJOR 问题，选 True。如果只有 MINOR 问题或无问题，选 False。")
 ```
 
-### 2. review-reply.md
+### 2. review-summary.md
 
-- **目标**：发布到 GitHub PR 的 Review 评论。
-- **格式**：纯 Markdown 文本（仅包含 `reply_content`）。
+- **目标**：用 3-6 条 bullet 简洁总结 PR 改了什么，供单独发表评论。
+- **格式**：纯 Markdown。
 - **内容规范**：
   1. 语言自适应（中文对中文，英文对英文）。
-  2. 语气像 Linus：直接、权威、技术精准。
-  3. 如果发现问题，必须指出具体文件和行号。
-  4. 严禁客服用语。
-  5. **必须简短**：优先 10–30 行以内；不要输出“File Walkthrough”大表格、HTML、Mermaid。
-  6. **必须三段式**（不要加第四段/额外标题）：
-     - 中文 PR：严格使用 `## 总结` / `## 评价` / `## 建议`
-     - 英文 PR：严格使用 `## Summary` / `## Assessment` / `## Suggestions`
-     - `总结`：1-3 句说明 PR 做了什么（不展开细节）。
-     - `评价`：必须包含 `Verdict: approve|request_changes|comment` 与 `Score: <0-100>`，再补 1-2 句总评。
-     - `建议`：0-5 条可执行建议（带 `file:line`）；若无，写 `N/A`。
+  2. 只写变更摘要，不输出 Verdict/Score，不写修改建议。
+  3. **必须简短**：优先 10–20 行以内。
+
+### 3. review-result.md
+
+- **目标**：发布到 GitHub PR 的 Review（Approve/Request Changes/Comment）。
+- **格式**：纯 Markdown（这是 `reply_content` 的来源，必须一致）。
+- **内容规范**：
+  1. 语言自适应（中文对中文，英文对英文）。
+  2. 必须包含两行（原样输出，不要改 key 名）：
+     - `Verdict: approve|request_changes|comment`
+     - `Score: <0-100>`
+  3. 其余内容 1-3 句话即可，直说能不能合。
+  4. **必须简短**：优先 10–20 行以内。
+
+### 4. review-suggestions.md
+
+- **目标**：给出可执行修改建议清单，供单独发表评论（必要时会触发 PR Coder）。
+- **格式**：纯 Markdown。
+- **内容规范**：
+  1. 语言自适应（中文对中文，英文对英文）。
+  2. 0-5 条建议，按严重程度排序，必须包含 `file:line` 定位。
+  3. 若无建议，写 `N/A`。
+  4. **必须简短**：优先 10–30 行以内。
 
 ## Few-Shot Examples
 
 **Input (Clean Code - English):**
 PR adds a simple utility function with good tests.
 
-**Output (reply_content):**
-```md
-## Summary
-Adds a small utility function and covers it with tests.
-
-## Assessment
-Verdict: approve
-Score: 85
-Clean, minimal, and test-covered. Merge it.
-
-## Suggestions
-N/A
-```
+**Output (review-result.md / reply_content):**
+"Verdict: approve\nScore: 85\nClean, minimal, and test-covered. Merge it."
 
 **Output (review-response.json excerpt):**
 
@@ -184,19 +189,8 @@ N/A
 **Input (Race Condition - Chinese):**
 PR 添加了一个连接池，但在高并发场景下可能有竞态条件。
 
-**Output (reply_content):**
-```md
-## 总结
-你加了连接池，但并发路径里有明显的锁使用错误。
-
-## 评价
-Verdict: request_changes
-Score: 30
-`Pool.acquire()` 在等待 socket 的时候还持有锁，死锁风险不是“可能”，是迟早。
-
-## 建议
-- `pool.py:45-52`: 等待逻辑必须移出临界区，缩小锁粒度。
-```
+**Output (review-result.md / reply_content):**
+"Verdict: request_changes\nScore: 30\n`Pool.acquire()` 在等待 socket 的时候还持有锁，死锁风险不是“可能”，是迟早。"
 
 **Output (review-response.json excerpt):**
 
@@ -223,19 +217,8 @@ Score: 30
 **Input (Over-engineering - English):**
 PR introduces AbstractFactoryManager for "future extensibility".
 
-**Output (reply_content):**
-```md
-## Summary
-Introduces an AbstractFactoryManager to “future-proof” the design.
-
-## Assessment
-Verdict: request_changes
-Score: 20
-This is abstraction for its own sake. It makes the code worse today for a problem we do not have.
-
-## Suggestions
-- `factory.py:1-150`: Delete the factory layer and keep the simple concrete implementation.
-```
+**Output (review-result.md / reply_content):**
+"Verdict: request_changes\nScore: 20\nThis is abstraction for its own sake. Delete the factory layer and keep the simple implementation."
 
 **Output (review-response.json excerpt):**
 
