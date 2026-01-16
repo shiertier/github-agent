@@ -16,6 +16,10 @@ cp github-agent.yml .github/workflows/
 - `OPENAI_API_KEY` - OpenAI API Key
 - （可选）`OPENAI_API_BASE` - OpenAI 兼容 API Base URL（自建/代理端点）
 
+并在仓库 **Settings → Actions → General → Workflow permissions**：
+- 选择 **Read and write permissions**
+- 勾选 **Allow GitHub Actions to create and approve pull requests**（否则无法自动创建 PR）
+
 ## 配置选项
 
 | 参数             | 必填 | 默认值     | 说明           |

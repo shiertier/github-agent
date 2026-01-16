@@ -77,6 +77,12 @@ jobs:
 - `OPENAI_API_KEY`
 - （可选）`OPENAI_API_BASE`（自建/代理 endpoint 时使用）
 
+并在仓库 **Settings → Actions → General → Workflow permissions**：
+- 选择 **Read and write permissions**
+- 勾选 **Allow GitHub Actions to create and approve pull requests**
+
+否则 `secrets.GITHUB_TOKEN` 无法自动创建 PR（Action 会改为推送分支并给出 compare 链接）；也可以改用 PAT Secret 作为 `github_token` 输入。
+
 > 注：Action 版本仍在开发中。如需立即使用，请参考部署指南的自托管方式。
 
 ### 3. 开始使用

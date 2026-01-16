@@ -4,7 +4,7 @@ author: "Your Organization"
 
 inputs:
   github_token:
-    description: "GitHub token for API access"
+    description: "GitHub token for API access (use a PAT if GITHUB_TOKEN cannot create PRs)"
     required: true
     default: ${{ github.token }}
   openai_api_key:
