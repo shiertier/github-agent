@@ -23,5 +23,6 @@ cp github-agent.yml .github/workflows/
 | `github_token`   | ✅   | -          | GitHub Token   |
 | `openai_api_key` | ✅   | -          | OpenAI API Key |
 | `openai_api_base` | ❌  | -          | OpenAI 兼容 API Base URL |
-| `opencode_bin`   | ❌   | `opencode` | OpenCode 路径  |
+| `opencode_bin`   | ❌   | `codex`    | 选择 `codex` 或 `opencode`（运行时自动安装） |
 | `max_rounds`     | ❌   | `3`        | 最大循环轮数   |
+| `auto_coder`     | ❌   | `true`     | Issue 创建后自动触发 Issue Coder |

@@ -82,20 +82,17 @@ jobs:
 ### 3. 开始使用
 
 - 创建一个 Issue 描述 bug 或功能需求
-- Agent 会自动创建 PR 来解决问题
-- 使用 `/update_pr` 指导 Agent 修改代码
+- Agent 会自动分析并（可选）创建 PR 来解决问题
+- 在 Issue/PR 评论中使用 `@coder ...` 可手动触发 Coder
+- 使用 `/reset` 重置循环轮数
 
 ## 💬 命令列表
 
-| 命令              | 描述                     |
-| :---------------- | :----------------------- |
-| _(自动)_          | Issue 创建时自动触发修复 |
-| `/update_pr`      | 基于反馈更新 PR          |
-| `/update_pr_new`  | 创建新分支修复问题       |
-| `/rereview`       | 重新执行 Review          |
-| `/reset`          | 重置循环轮数             |
-| `/request_review` | 请求 Reviewer 审查       |
-| `/review_done`    | Reviewer 完成审查交接    |
+| 命令     | 描述                              |
+| :------- | :-------------------------------- |
+| _(自动)_ | Issue/PR 事件触发 Agent           |
+| `@coder` | 在评论中触发 Coder（Issue/PR 通用） |
+| `/reset` | 重置循环轮数                      |
 
 ## 🏷️ PR 标签约定
 

@@ -18,6 +18,10 @@ inputs:
     description: "Maximum number of agent rounds per issue/PR"
     required: false
     default: "3"
+  auto_coder:
+    description: "Automatically run issue-coder when issue-chatter sets requires_coding_agent (true/false)"
+    required: false
+    default: "true"
   model_name:
     description: "LLM model name (e.g., gpt-4o, claude-sonnet-4-20250514)"
     required: false

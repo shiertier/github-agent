@@ -63,6 +63,15 @@ function validateResponseLanguage(value: string | undefined): "en" | "zh-CN" | u
   return undefined;
 }
 
+function parseBooleanInput(value: string | undefined): boolean | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
 // 加载配置（优先级：action inputs > env vars > toml file）
 function loadUserConfig(): UserConfig {
   // 默认值
@@ -867,7 +876,7 @@ function runOpenCode(
 }
 
 // 验证输出并重试
-function verifyAndResume(config: AgentConfig, maxRetries = 5): void {
+function verifyAndResume(config: AgentConfig, maxRetries = 5, basePromptOverride?: string): void {
   const expectedFiles = EXPECTED_OUTPUTS[config.mode];
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -885,7 +894,7 @@ function verifyAndResume(config: AgentConfig, maxRetries = 5): void {
     if (attempt < maxRetries) {
       // 添加额外提示要求输出文件
       const extraPrompt = `\n\n# REQUIRED OUTPUTS\n${expectedFiles.map((f) => `- ${f}`).join("\n")}`;
-      const basePrompt = fs.readFileSync(config.promptFile, "utf-8");
+      const basePrompt = basePromptOverride ?? fs.readFileSync(config.promptFile, "utf-8");
       const combinedPrompt = `${basePrompt}${extraPrompt}`;
       runOpenCode(config.promptFile, config.userConfig, true, combinedPrompt);
     }
@@ -1076,6 +1085,102 @@ async function postProcess(config: AgentConfig, round: number): Promise<void> {
   }
 }
 
+type IssueChatterResponse = {
+  issue_type?: string;
+  suggested_action?: string;
+  requires_coding_agent?: boolean;
+};
+
+function readIssueChatterResponse(): IssueChatterResponse | null {
+  const jsonFile = ".github-agent-data/issue-response.json";
+  if (!fileExists(jsonFile)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(jsonFile, "utf-8")) as IssueChatterResponse;
+  } catch (e) {
+    core.warning(`Failed to parse ${jsonFile}: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
+function isAutoIssueCoderEnabled(): boolean {
+  const parsed = parseBooleanInput(core.getInput("auto_coder"));
+  if (parsed === undefined) return true;
+  return parsed;
+}
+
+function removeFileIfExists(filePath: string): void {
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (e) {
+    core.debug(`Failed to remove ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function runAutoIssueCoder(
+  userConfig: UserConfig,
+  round: number,
+  chatterResponse: IssueChatterResponse
+): Promise<void> {
+  const issueNumber = github.context.payload.issue?.number;
+  const issueTitle = (github.context.payload.issue?.title || "").trim();
+  if (!issueNumber) return;
+
+  core.info("Auto-running issue-coder based on issue-chatter decision");
+
+  // Preserve chatter reply before coder overwrites issue-reply.md
+  const chatterReplyFile = ".github-agent-data/issue-reply.md";
+  if (fileExists(chatterReplyFile)) {
+    try {
+      const chatterReply = fs.readFileSync(chatterReplyFile, "utf-8");
+      fs.writeFileSync(".github-agent-data/issue-chatter-reply.md", chatterReply, "utf-8");
+    } catch (e) {
+      core.warning(`Failed to preserve ${chatterReplyFile}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    removeFileIfExists(chatterReplyFile);
+  }
+
+  const coderMode: AgentMode = "issue-coder";
+  const coderPromptFile = resolvePromptPath("prompts/issue-coder.md");
+  const coderConfig: AgentConfig = {
+    mode: coderMode,
+    promptFile: coderPromptFile,
+    contextFile: ".github-agent-data/issue-context.md",
+    maxRounds: userConfig.max_rounds,
+    userConfig,
+  };
+
+  configureGit(coderMode);
+
+  // Ensure stale outputs don't trick verification.
+  for (const outputFile of EXPECTED_OUTPUTS[coderMode]) {
+    removeFileIfExists(outputFile);
+  }
+
+  const basePrompt = fs.readFileSync(coderPromptFile, "utf-8");
+  const issueType = (chatterResponse.issue_type || "").toLowerCase();
+  const coderCommand = issueType === "bug" ? "fix" : "feat";
+  const instruction = [
+    "# Manager Instruction (auto-run)",
+    "Issue Chatter 判定需要写代码，自动触发 Issue Coder。",
+    "",
+    `@coder ${coderCommand} #${issueNumber}`,
+    "",
+    "> 目标：",
+    `> 解决 Issue #${issueNumber}${issueTitle ? `: ${issueTitle}` : ""}。`,
+    "> 交付：",
+    `> - 创建一个 PR，并在 PR 描述里包含 \`Closes #${issueNumber}\`。`,
+    "> - 变更尽量小，保持生产可用。",
+    "",
+  ].join("\n");
+  const combinedPrompt = `${basePrompt}\n\n${instruction}`;
+
+  runOpenCode(coderPromptFile, userConfig, false, combinedPrompt);
+  verifyAndResume(coderConfig, 5, combinedPrompt);
+  await postProcessCoder(coderMode, round);
+}
+
 // 主函数
 async function main(): Promise<void> {
   try {
@@ -1096,6 +1201,16 @@ async function main(): Promise<void> {
 
     // 后处理
     await postProcess(config, round);
+
+    if (
+      config.mode === "issue-chatter" &&
+      isAutoIssueCoderEnabled()
+    ) {
+      const response = readIssueChatterResponse();
+      if (response?.requires_coding_agent) {
+        await runAutoIssueCoder(config.userConfig, round, response);
+      }
+    }
 
     core.info("Agent completed successfully");
   } catch (error) {

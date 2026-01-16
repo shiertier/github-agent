@@ -8,16 +8,17 @@ GitHub Agent 通过事件自动触发，无需手动命令。唯一的例外是 
 
 | 事件         | 触发条件                           | Agent 行为                                |
 | ------------ | ---------------------------------- | ----------------------------------------- |
-| Issue 创建   | `issues.opened`                    | Issue Chatter 分析 → 可能触发 Issue Coder |
+| Issue 创建   | `issues.opened`                    | Issue Chatter 分析 →（可选）自动触发 Issue Coder |
 | Issue 评论   | `issue_comment.created` + `@coder` | Issue Coder 开发                          |
-| PR 创建/更新 | `pull_request.opened/synchronize`  | PR Reviewer 审查 → 可能触发 PR Coder      |
+| PR 创建/更新 | `pull_request.opened/synchronize`  | PR Reviewer 审查                          |
 | PR 评论      | `issue_comment.created` + `@coder` | PR Coder 修复                             |
 
-## 手动命令
+## 手动命令/触发
 
 | 命令     | 描述                                  | 示例     |
 | -------- | ------------------------------------- | -------- |
 | `/reset` | 重置循环轮数，允许 Agent 继续自动处理 | `/reset` |
+| `@coder` | 在 Issue/PR 评论中触发 Coder          | `@coder fix #123` |
 
 当 Agent 达到最大自动循环轮数（默认 3 轮）时会停止。使用 `/reset` 可以重置计数，让 Agent 继续工作。
 
