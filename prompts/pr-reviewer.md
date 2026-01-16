@@ -141,52 +141,8 @@ class ReviewResponse(BaseModel):
   2. 语气像 Linus：直接、权威、技术精准。
   3. 如果发现问题，必须指出具体文件和行号。
   4. 严禁客服用语。
-  5. **必须包含 PR Change Description 区块**，放在评论开头，格式固定如下（不允许改动标题、分隔线、区块顺序；内容为空时写 `N/A`）：
-
-```md
-### **PR Type**
-<类型列表，用逗号分隔，如 Enhancement, Bug Fix, Refactor, Test, Docs, Other>
-
-___
-
-### **Description**
-- <简洁列出主要变更点，3-6 条>
-
-___
-
-### Diagram Walkthrough
-```mermaid
-<如涉及关键流程/交互，补充 Mermaid 图；否则写 N/A>
-```
-
-___
-
-### File Walkthrough
-<如无关键文件，写 N/A；否则必须使用以下固定 HTML+Markdown 结构>
-
-<details> <summary><h3> File Walkthrough</h3></summary>
-
-<table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>
-<tr><td><strong>Enhancement</strong></td><td><table>
-<tr>
-  <td>
-    <details>
-      <summary><strong>file.py</strong><dd><code>一句话说明</code></dd></summary>
-      <hr>
-      path/to/file.py
-      <ul>
-        <li>要点 1</li>
-        <li>要点 2</li>
-      </ul>
-    </details>
-  </td>
-  <td><a href="https://github.com/owner/repo/pull/123/files#diff-xxxx">+X/-Y</a></td>
-</tr>
-</table></td></tr>
-</tbody></table>
-
-</details>
-```
+  5. **必须简短**：优先 10–30 行以内；不要输出“File Walkthrough”大表格、HTML、Mermaid。
+  6. 推荐结构（按需）：`Verdict` 一行 + `Summary` 1-2 句 + `Key issues`（0-5 条，带 `file:line`）+ `Next steps`（一句话）。
 
 ## Few-Shot Examples
 

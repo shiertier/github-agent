@@ -54,6 +54,7 @@ const path = __importStar(__nccwpck_require__(6928));
 const TOML = __importStar(__nccwpck_require__(4572));
 const ACTION_ROOT = path.resolve(__dirname, "..");
 const DEFAULT_BASE_BRANCH = "main";
+let currentPrCheckout = null;
 function resolvePromptPath(relativePath) {
     return path.join(ACTION_ROOT, relativePath);
 }
@@ -299,6 +300,48 @@ function getDefaultBranch() {
             return match[1];
     }
     return DEFAULT_BASE_BRANCH;
+}
+async function checkoutPullRequestHead(octokit, owner, repo, prNumber) {
+    const { data: pr } = await withRetry("pulls.get", () => octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: prNumber,
+    }));
+    const headRef = pr.head?.ref;
+    const baseRef = pr.base?.ref;
+    if (!headRef || !baseRef) {
+        throw new Error(`Failed to resolve PR refs for #${prNumber}`);
+    }
+    const headRepoFullName = (pr.head?.repo?.full_name || "").toLowerCase();
+    const baseRepoFullName = (pr.base?.repo?.full_name || `${owner}/${repo}`).toLowerCase();
+    const isSameRepo = headRepoFullName && headRepoFullName === baseRepoFullName;
+    if (isSameRepo) {
+        git(["fetch", "origin", `+refs/heads/${headRef}:refs/remotes/origin/${headRef}`]);
+        git(["checkout", "-B", headRef, `refs/remotes/origin/${headRef}`]);
+        core.info(`Checked out PR #${prNumber} head branch: ${headRef}`);
+        return {
+            prNumber,
+            headRef,
+            baseRef,
+            checkedOutBranch: headRef,
+            canPush: true,
+        };
+    }
+    const localBranch = `pr-${prNumber}-head`;
+    git([
+        "fetch",
+        "origin",
+        `+refs/pull/${prNumber}/head:refs/remotes/origin/${localBranch}`,
+    ]);
+    git(["checkout", "-B", localBranch, `refs/remotes/origin/${localBranch}`]);
+    core.info(`Checked out PR #${prNumber} head ref (fork): ${localBranch}`);
+    return {
+        prNumber,
+        headRef,
+        baseRef,
+        checkedOutBranch: localBranch,
+        canPush: false,
+    };
 }
 function hasUncommittedChanges() {
     const output = gitTryOutput(["status", "--porcelain"]);
@@ -1249,6 +1292,43 @@ async function postProcessCoder(mode, round) {
                 core.warning(`Failed to push/create PR: ${e instanceof Error ? e.message : String(e)}`);
             }
         }
+        if (mode === "pr-coder") {
+            const prCheckout = currentPrCheckout && currentPrCheckout.prNumber === issueNumber ? currentPrCheckout : null;
+            if (!prCheckout) {
+                core.warning("Missing PR checkout info; cannot push pr-coder changes automatically");
+            }
+            else if (!prCheckout.canPush) {
+                prefix = `无法推送到 fork PR 分支（${prCheckout.headRef}），仅输出修改摘要。\n\n`;
+            }
+            else {
+                commitAllChanges(`chore(agent): update PR #${issueNumber}`);
+                const aheadCountText = gitTryOutput(["rev-list", "--count", `origin/${prCheckout.headRef}..HEAD`]);
+                const aheadCount = aheadCountText ? parseInt(aheadCountText, 10) : 0;
+                if (!Number.isFinite(aheadCount) || aheadCount <= 0) {
+                    core.info("No new commits to push");
+                }
+                else {
+                    try {
+                        await gitPushWithRetry(prCheckout.headRef, { forceWithLease: false });
+                        prefix = `已更新 PR 分支: ${prCheckout.headRef}\n\n`;
+                    }
+                    catch (e) {
+                        core.warning(`Failed to push PR branch: ${e instanceof Error ? e.message : String(e)}`);
+                        const current = currentBranchName();
+                        if (current && current !== "HEAD") {
+                            try {
+                                await gitPushWithRetry(current, { forceWithLease: false });
+                                const compareUrl = `https://github.com/${owner}/${repo}/compare/${prCheckout.baseRef}...${current}?expand=1`;
+                                prefix = `推送到 PR 分支失败，已推送到分支: ${current}\n创建 PR: ${compareUrl}\n\n`;
+                            }
+                            catch (e2) {
+                                core.warning(`Failed to push fallback branch: ${e2 instanceof Error ? e2.message : String(e2)}`);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         const body = `${prefix}${content}\n\n<!-- agent:${agentName} -->\n<!-- agent-round:${round} -->`;
         await withRetry("issues.createComment", () => octokit.rest.issues.createComment({
             owner,
@@ -1300,6 +1380,15 @@ async function main() {
         core.info(`Agent mode: ${config.mode}`);
         configureGit(config.mode);
         installContextSkills();
+        if (github.context.eventName === "issue_comment" && github.context.payload.issue?.pull_request) {
+            const token = core.getInput("github_token") || process.env.GITHUB_TOKEN;
+            if (!token)
+                throw new Error("Missing GITHUB_TOKEN");
+            const prNumber = github.context.payload.issue.number;
+            const { owner, repo } = github.context.repo;
+            const octokit = github.getOctokit(token);
+            currentPrCheckout = await checkoutPullRequestHead(octokit, owner, repo, prNumber);
+        }
         const round = await checkRoundLimit(config.maxRounds);
         core.setOutput("current_round", round);
         // 运行 Agent
