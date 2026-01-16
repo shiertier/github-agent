@@ -245,6 +245,86 @@ function configureGit(mode: AgentMode): void {
   core.info(`Git configured as ${botName}`);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatErrorSummary(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const err = error as { status?: unknown; code?: unknown };
+  const status = typeof err?.status === "number" ? err.status : undefined;
+  const code = typeof err?.code === "string" ? err.code : undefined;
+  const parts = [];
+  if (code) parts.push(code);
+  if (status) parts.push(`HTTP ${status}`);
+  parts.push(message);
+  return parts.join(" ");
+}
+
+function isRetryableError(error: unknown): boolean {
+  const err = error as { message?: unknown; status?: unknown; code?: unknown };
+  const message = typeof err?.message === "string" ? err.message : "";
+  const code = typeof err?.code === "string" ? err.code : "";
+  const status = typeof err?.status === "number" ? err.status : undefined;
+
+  const retryableCodes = new Set([
+    "EPIPE",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ECONNREFUSED",
+    "ERR_SOCKET_TIMEOUT",
+  ]);
+  if (code && retryableCodes.has(code)) return true;
+
+  if (/write EPIPE/i.test(message)) return true;
+  if (/socket hang up/i.test(message)) return true;
+  if (/ECONNRESET/i.test(message)) return true;
+  if (/ETIMEDOUT/i.test(message)) return true;
+
+  if (status === 408 || status === 429) return true;
+  if (status && status >= 500 && status < 600) return true;
+
+  if (status === 403 && /rate limit/i.test(message)) return true;
+
+  return false;
+}
+
+async function withRetry<T>(
+  name: string,
+  fn: () => Promise<T>,
+  options?: { maxAttempts?: number; baseDelayMs?: number; maxDelayMs?: number }
+): Promise<T> {
+  const maxAttempts = options?.maxAttempts ?? 5;
+  const baseDelayMs = options?.baseDelayMs ?? 500;
+  const maxDelayMs = options?.maxDelayMs ?? 8000;
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const retryable = isRetryableError(error);
+      if (!retryable || attempt >= maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
+      const jitterMs = Math.floor(Math.random() * 250);
+      core.warning(
+        `${name} failed (attempt ${attempt}/${maxAttempts}): ${formatErrorSummary(error)}; retrying in ${
+          delayMs + jitterMs
+        }ms`
+      );
+      await sleep(delayMs + jitterMs);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 // 检查轮数限制
 async function checkRoundLimit(maxRounds: number): Promise<number> {
   const token = core.getInput("github_token") || process.env.GITHUB_TOKEN;
@@ -264,12 +344,14 @@ async function checkRoundLimit(maxRounds: number): Promise<number> {
     return 1; // No issue context, start from round 1
   }
 
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner,
-    repo,
-    issue_number: issueNumber,
-    per_page: 100,
-  });
+  const { data: comments } = await withRetry("issues.listComments", () =>
+    octokit.rest.issues.listComments({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: 100,
+    })
+  );
 
   // Check for /reset command
   const lastResetIndex = comments
@@ -832,12 +914,14 @@ async function postProcessIssueChatter(round: number): Promise<void> {
     const replyContent = fs.readFileSync(replyFile, "utf-8");
     const body = `${replyContent}\n\n<!-- agent:issue-chatter-agent -->\n<!-- agent-round:${round} -->`;
 
-    await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: issueNumber,
-      body,
-    });
+    await withRetry("issues.createComment", () =>
+      octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body,
+      })
+    );
     core.info("Posted issue reply");
   }
 
@@ -848,23 +932,30 @@ async function postProcessIssueChatter(round: number): Promise<void> {
 
     // 添加标签
     if (response.labels?.add?.length > 0) {
-      await octokit.rest.issues.addLabels({
-        owner,
-        repo,
-        issue_number: issueNumber,
-        labels: response.labels.add,
-      });
+      await withRetry("issues.addLabels", () =>
+        octokit.rest.issues.addLabels({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          labels: response.labels.add,
+        })
+      );
     }
 
     // 移除标签
     for (const label of response.labels?.remove || []) {
       try {
-        await octokit.rest.issues.removeLabel({
-          owner,
-          repo,
-          issue_number: issueNumber,
-          name: label,
-        });
+        await withRetry(
+          "issues.removeLabel",
+          () =>
+            octokit.rest.issues.removeLabel({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              name: label,
+            }),
+          { maxAttempts: 3 }
+        );
       } catch (e) {
         core.debug(`Failed to remove label "${label}": ${e instanceof Error ? e.message : e}`);
       }
@@ -872,12 +963,14 @@ async function postProcessIssueChatter(round: number): Promise<void> {
 
     // 关闭 Issue
     if (response.suggested_action === "close") {
-      await octokit.rest.issues.update({
-        owner,
-        repo,
-        issue_number: issueNumber,
-        state: "closed",
-      });
+      await withRetry("issues.update", () =>
+        octokit.rest.issues.update({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          state: "closed",
+        })
+      );
     }
 
     // 设置输出
@@ -915,13 +1008,15 @@ async function postProcessPRReviewer(round: number): Promise<void> {
       };
     const event = eventMap[response.verdict] || "COMMENT";
 
-    await octokit.rest.pulls.createReview({
-      owner,
-      repo,
-      pull_number: prNumber,
-      body,
-      event,
-    });
+    await withRetry("pulls.createReview", () =>
+      octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        body,
+        event,
+      })
+    );
     core.info(`Posted PR review: ${event}`);
 
     core.setOutput("requires_coding_agent", response.requires_coding_agent);
@@ -953,12 +1048,14 @@ async function postProcessCoder(
     const agentName = mode === "pr-coder" ? "pr-coder-agent" : "issue-coder-agent";
     const body = `${content}\n\n<!-- agent:${agentName} -->\n<!-- agent-round:${round} -->`;
 
-    await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: issueNumber,
-      body,
-    });
+    await withRetry("issues.createComment", () =>
+      octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body,
+      })
+    );
     core.info(`Posted ${mode} summary`);
   }
 }
