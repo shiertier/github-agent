@@ -142,7 +142,12 @@ class ReviewResponse(BaseModel):
   3. 如果发现问题，必须指出具体文件和行号。
   4. 严禁客服用语。
   5. **必须简短**：优先 10–30 行以内；不要输出“File Walkthrough”大表格、HTML、Mermaid。
-  6. 推荐结构（按需）：`Verdict` 一行 + `Summary` 1-2 句 + `Key issues`（0-5 条，带 `file:line`）+ `Next steps`（一句话）。
+  6. **必须三段式**（不要加第四段/额外标题）：
+     - 中文 PR：严格使用 `## 总结` / `## 评价` / `## 建议`
+     - 英文 PR：严格使用 `## Summary` / `## Assessment` / `## Suggestions`
+     - `总结`：1-3 句说明 PR 做了什么（不展开细节）。
+     - `评价`：必须包含 `Verdict: approve|request_changes|comment` 与 `Score: <0-100>`，再补 1-2 句总评。
+     - `建议`：0-5 条可执行建议（带 `file:line`）；若无，写 `N/A`。
 
 ## Few-Shot Examples
 
@@ -150,7 +155,18 @@ class ReviewResponse(BaseModel):
 PR adds a simple utility function with good tests.
 
 **Output (reply_content):**
-"Clean implementation. The function does one thing and does it well. Tests cover edge cases. Approved."
+```md
+## Summary
+Adds a small utility function and covers it with tests.
+
+## Assessment
+Verdict: approve
+Score: 85
+Clean, minimal, and test-covered. Merge it.
+
+## Suggestions
+N/A
+```
 
 **Output (review-response.json excerpt):**
 
@@ -169,13 +185,18 @@ PR adds a simple utility function with good tests.
 PR 添加了一个连接池，但在高并发场景下可能有竞态条件。
 
 **Output (reply_content):**
-"这个实现有问题。`Pool.acquire()` 在等待 socket 的时候还持有锁，这会导致死锁。
+```md
+## 总结
+你加了连接池，但并发路径里有明显的锁使用错误。
 
-**问题**:
+## 评价
+Verdict: request_changes
+Score: 30
+`Pool.acquire()` 在等待 socket 的时候还持有锁，死锁风险不是“可能”，是迟早。
 
-- `pool.py:45-52`: 锁粒度太粗，等待逻辑必须移出临界区。
-
-需要重构后再提交。"
+## 建议
+- `pool.py:45-52`: 等待逻辑必须移出临界区，缩小锁粒度。
+```
 
 **Output (review-response.json excerpt):**
 
@@ -203,7 +224,18 @@ PR 添加了一个连接池，但在高并发场景下可能有竞态条件。
 PR introduces AbstractFactoryManager for "future extensibility".
 
 **Output (reply_content):**
-"No. This is over-engineered garbage. You're adding three layers of abstraction to solve a problem we don't have. Delete the factory, keep the simple implementation. We add complexity when we need it, not before."
+```md
+## Summary
+Introduces an AbstractFactoryManager to “future-proof” the design.
+
+## Assessment
+Verdict: request_changes
+Score: 20
+This is abstraction for its own sake. It makes the code worse today for a problem we do not have.
+
+## Suggestions
+- `factory.py:1-150`: Delete the factory layer and keep the simple concrete implementation.
+```
 
 **Output (review-response.json excerpt):**
 
