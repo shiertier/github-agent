@@ -1,4 +1,6 @@
 /example/
 node_modules/
 test/
+.github-agent-data/
+.codex/
 *.log

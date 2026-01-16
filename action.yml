@@ -22,6 +22,10 @@ inputs:
     description: "LLM model name (e.g., gpt-4o, claude-sonnet-4-20250514)"
     required: false
     default: ""
+  model_reasoning_effort:
+    description: "Codex reasoning effort (e.g., low/medium/high/xhigh)"
+    required: false
+    default: "xhigh"
   max_tokens:
     description: "Maximum tokens for LLM response"
     required: false
@@ -54,6 +58,10 @@ inputs:
     description: "OpenAI API base URL (optional, for custom endpoints or compatible APIs)"
     required: false
     default: ""
+  disable_response_storage:
+    description: "Disable storing responses in Codex CLI (true/false)"
+    required: false
+    default: "true"
 
 outputs:
   current_round:

@@ -61,13 +61,21 @@ jobs:
       - uses: shiertier/github-agent@main
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          # openai_api_base: ${{ secrets.OPENAI_API_BASE }}
+          # model_name: gpt-5.2
+          # model_reasoning_effort: xhigh
+          # disable_response_storage: "true"
+          # opencode_bin: opencode
 ```
 
 > 默认使用 `codex` 并在运行时自动安装；如需 `opencode`，在 `with` 中设置 `opencode_bin: opencode`。
 
 ### 2. 配置 Secrets
 
-在仓库设置中添加 `OPENAI_API_KEY`。
+在仓库设置中添加：
+- `OPENAI_API_KEY`
+- （可选）`OPENAI_API_BASE`（自建/代理 endpoint 时使用）
 
 > 注：Action 版本仍在开发中。如需立即使用，请参考部署指南的自托管方式。
 

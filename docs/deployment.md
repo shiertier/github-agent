@@ -39,8 +39,12 @@ jobs:
 | ---------------- | ---- | ---------- | ---------------------- |
 | `github_token`   | ✅   | -          | GitHub API Token       |
 | `openai_api_key` | ✅   | -          | OpenAI API Key（同时导出为 `CODEX_API_KEY`） |
+| `openai_api_base` | ❌  | -          | OpenAI 兼容 API Base URL（如自建/代理端点） |
 | `opencode_bin`   | ❌   | `codex`    | OpenCode/Codex CLI 可执行文件（`opencode` 或 `codex`） |
 | `max_rounds`     | ❌   | `3`        | 每个 Issue/PR 最大轮数 |
+| `model_name`     | ❌   | -          | 模型名（如 `gpt-5.2`） |
+| `model_reasoning_effort` | ❌ | `xhigh` | Codex 推理强度（如 `low/medium/high/xhigh`） |
+| `disable_response_storage` | ❌ | `true` | Codex 禁用响应存储（`true/false`） |
 
 ## 前置要求
 

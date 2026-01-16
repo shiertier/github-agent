@@ -14,6 +14,7 @@ cp github-agent.yml .github/workflows/
 然后在 GitHub 仓库设置中添加以下 Secrets：
 
 - `OPENAI_API_KEY` - OpenAI API Key
+- （可选）`OPENAI_API_BASE` - OpenAI 兼容 API Base URL（自建/代理端点）
 
 ## 配置选项
 
@@ -21,5 +22,6 @@ cp github-agent.yml .github/workflows/
 | ---------------- | ---- | ---------- | -------------- |
 | `github_token`   | ✅   | -          | GitHub Token   |
 | `openai_api_key` | ✅   | -          | OpenAI API Key |
+| `openai_api_base` | ❌  | -          | OpenAI 兼容 API Base URL |
 | `opencode_bin`   | ❌   | `opencode` | OpenCode 路径  |
 | `max_rounds`     | ❌   | `3`        | 最大循环轮数   |

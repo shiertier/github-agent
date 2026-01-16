@@ -18,6 +18,19 @@ function resolvePromptPath(relativePath: string): string {
   return path.join(ACTION_ROOT, relativePath);
 }
 
+function ensureDir(dirPath: string): void {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function writeExecutable(filePath: string, content: string): void {
+  fs.writeFileSync(filePath, content, { encoding: "utf-8", mode: 0o755 });
+  try {
+    fs.chmodSync(filePath, 0o755);
+  } catch {
+    // Best effort: chmod may fail on some filesystems.
+  }
+}
+
 // Agent 模式
 type AgentMode = "issue-chatter" | "issue-coder" | "pr-reviewer" | "pr-coder";
 
@@ -54,7 +67,7 @@ function validateResponseLanguage(value: string | undefined): "en" | "zh-CN" | u
 function loadUserConfig(): UserConfig {
   // 默认值
   const defaults: UserConfig = {
-    model_name: "gpt-4o",
+    model_name: "",
     max_tokens: 4096,
     fallback_models: [],
     response_language: "en",
@@ -87,16 +100,25 @@ function loadUserConfig(): UserConfig {
     envConfig.model_name = process.env.GITHUB_AGENT_MODEL_NAME;
   }
   if (process.env.GITHUB_AGENT_MAX_TOKENS) {
-    envConfig.max_tokens = parseInt(process.env.GITHUB_AGENT_MAX_TOKENS, 10);
+    const parsed = parseInt(process.env.GITHUB_AGENT_MAX_TOKENS, 10);
+    if (Number.isFinite(parsed)) {
+      envConfig.max_tokens = parsed;
+    }
   }
   if (process.env.GITHUB_AGENT_FALLBACK_MODELS) {
     envConfig.fallback_models = process.env.GITHUB_AGENT_FALLBACK_MODELS.split(",").map((s) => s.trim());
   }
   if (process.env.GITHUB_AGENT_RESPONSE_LANGUAGE) {
-    envConfig.response_language = validateResponseLanguage(process.env.GITHUB_AGENT_RESPONSE_LANGUAGE);
+    const parsed = validateResponseLanguage(process.env.GITHUB_AGENT_RESPONSE_LANGUAGE);
+    if (parsed) {
+      envConfig.response_language = parsed;
+    }
   }
   if (process.env.GITHUB_AGENT_MAX_ROUNDS) {
-    envConfig.max_rounds = parseInt(process.env.GITHUB_AGENT_MAX_ROUNDS, 10);
+    const parsed = parseInt(process.env.GITHUB_AGENT_MAX_ROUNDS, 10);
+    if (Number.isFinite(parsed)) {
+      envConfig.max_rounds = parsed;
+    }
   }
 
   // 3. 从 action inputs 加载（最高优先级）
@@ -105,16 +127,31 @@ function loadUserConfig(): UserConfig {
   if (modelName) inputConfig.model_name = modelName;
   
   const maxTokens = core.getInput("max_tokens");
-  if (maxTokens) inputConfig.max_tokens = parseInt(maxTokens, 10);
+  if (maxTokens) {
+    const parsed = parseInt(maxTokens, 10);
+    if (Number.isFinite(parsed)) {
+      inputConfig.max_tokens = parsed;
+    }
+  }
   
   const fallbackModels = core.getInput("fallback_models");
   if (fallbackModels) inputConfig.fallback_models = fallbackModels.split(",").map((s) => s.trim());
   
   const responseLang = core.getInput("response_language");
-  if (responseLang) inputConfig.response_language = validateResponseLanguage(responseLang);
+  if (responseLang) {
+    const parsed = validateResponseLanguage(responseLang);
+    if (parsed) {
+      inputConfig.response_language = parsed;
+    }
+  }
   
   const maxRounds = core.getInput("max_rounds");
-  if (maxRounds) inputConfig.max_rounds = parseInt(maxRounds, 10);
+  if (maxRounds) {
+    const parsed = parseInt(maxRounds, 10);
+    if (Number.isFinite(parsed)) {
+      inputConfig.max_rounds = parsed;
+    }
+  }
 
   // 合并配置（后面的覆盖前面的）
   return {
@@ -280,6 +317,205 @@ const EXPECTED_OUTPUTS: Record<AgentMode, string[]> = {
   "pr-coder": [".github-agent-data/pr-update-summary.md"],
 };
 
+function installContextSkills(): void {
+  const codexHome = (process.env.CODEX_HOME || path.join(os.homedir(), ".codex")).trim();
+  const skillsRoot = path.join(codexHome, "skills");
+  const issueSkillRoot = path.join(skillsRoot, "get-issue-context");
+  const prSkillRoot = path.join(skillsRoot, "get-pr-context");
+  const issueScriptsDir = path.join(issueSkillRoot, "scripts");
+  const prScriptsDir = path.join(prSkillRoot, "scripts");
+
+  ensureDir(issueScriptsDir);
+  ensureDir(prScriptsDir);
+
+  const issueSkillMd = `---
+name: get-issue-context
+description: Fetch and write GitHub Issue context into .github-agent-data/issue-context.md for the current repository.
+---
+
+Run:
+
+get-issue-context "$ISSUE_NUMBER"
+`;
+  const prSkillMd = `---
+name: get-pr-context
+description: Fetch and write GitHub Pull Request context into .github-agent-data/pr-context.md for the current repository.
+---
+
+Run:
+
+get-pr-context "$PR_NUMBER"
+`;
+  fs.writeFileSync(path.join(issueSkillRoot, "SKILL.md"), issueSkillMd, "utf-8");
+  fs.writeFileSync(path.join(prSkillRoot, "SKILL.md"), prSkillMd, "utf-8");
+
+  const issueScript = `#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+
+
+def run_gh(args: list[str]) -> str:
+  env = os.environ.copy()
+  if not env.get("GH_TOKEN") and env.get("GITHUB_TOKEN"):
+    env["GH_TOKEN"] = env["GITHUB_TOKEN"]
+  return subprocess.check_output(["gh"] + args, env=env, text=True)
+
+
+def main() -> int:
+  issue_number = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ISSUE_NUMBER")
+  if not issue_number:
+    print("Missing issue number (arg1 or ISSUE_NUMBER).", file=sys.stderr)
+    return 2
+
+  repo = os.environ.get("GITHUB_REPOSITORY")
+  if not repo:
+    try:
+      repo = run_gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).strip()
+    except Exception:
+      repo = ""
+  if not repo:
+    print("Missing GITHUB_REPOSITORY and failed to resolve repo.", file=sys.stderr)
+    return 2
+
+  issue = json.loads(run_gh(["api", f"repos/{repo}/issues/{issue_number}"]))
+  comments = json.loads(run_gh(["api", f"repos/{repo}/issues/{issue_number}/comments", "--paginate"]))
+
+  out_dir = os.path.join(os.getcwd(), ".github-agent-data")
+  os.makedirs(out_dir, exist_ok=True)
+  out_path = os.path.join(out_dir, "issue-context.md")
+
+  def fmt_dt(s: str | None) -> str:
+    if not s:
+      return ""
+    try:
+      return datetime.fromisoformat(s.replace("Z", "+00:00")).isoformat()
+    except Exception:
+      return s
+
+  labels = [l.get("name") for l in issue.get("labels", []) if isinstance(l, dict) and l.get("name")]
+
+  with open(out_path, "w", encoding="utf-8") as f:
+    f.write(f"# Issue #{issue_number}: {issue.get('title','').strip()}\n\n")
+    f.write(f"- Repo: {repo}\n")
+    f.write(f"- State: {issue.get('state','')}\n")
+    f.write(f"- Author: {issue.get('user',{}).get('login','')}\n")
+    if labels:
+      f.write(f"- Labels: {', '.join(labels)}\n")
+    f.write(f"- Created: {fmt_dt(issue.get('created_at'))}\n")
+    f.write(f"- Updated: {fmt_dt(issue.get('updated_at'))}\n\n")
+
+    body = (issue.get("body") or "").strip()
+    f.write("## Body\n\n")
+    f.write(body + "\n\n" if body else "(empty)\n\n")
+
+    f.write(f"## Comments ({len(comments)})\n\n")
+    for c in comments:
+      author = (c.get("user") or {}).get("login", "")
+      created = fmt_dt(c.get("created_at"))
+      f.write(f"### {author} @ {created}\n\n")
+      cb = (c.get("body") or "").strip()
+      f.write(cb + "\n\n" if cb else "(empty)\n\n")
+
+  print(out_path)
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
+`;
+
+  const prScript = `#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+
+
+def run_gh(args: list[str]) -> str:
+  env = os.environ.copy()
+  if not env.get("GH_TOKEN") and env.get("GITHUB_TOKEN"):
+    env["GH_TOKEN"] = env["GITHUB_TOKEN"]
+  return subprocess.check_output(["gh"] + args, env=env, text=True)
+
+
+def main() -> int:
+  pr_number = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PR_NUMBER")
+  if not pr_number:
+    print("Missing PR number (arg1 or PR_NUMBER).", file=sys.stderr)
+    return 2
+
+  repo = os.environ.get("GITHUB_REPOSITORY")
+  if not repo:
+    try:
+      repo = run_gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).strip()
+    except Exception:
+      repo = ""
+  if not repo:
+    print("Missing GITHUB_REPOSITORY and failed to resolve repo.", file=sys.stderr)
+    return 2
+
+  pr = json.loads(run_gh(["api", f"repos/{repo}/pulls/{pr_number}"]))
+  issue = json.loads(run_gh(["api", f"repos/{repo}/issues/{pr_number}"]))
+  comments = json.loads(run_gh(["api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate"]))
+
+  out_dir = os.path.join(os.getcwd(), ".github-agent-data")
+  os.makedirs(out_dir, exist_ok=True)
+  out_path = os.path.join(out_dir, "pr-context.md")
+
+  def fmt_dt(s: str | None) -> str:
+    if not s:
+      return ""
+    try:
+      return datetime.fromisoformat(s.replace("Z", "+00:00")).isoformat()
+    except Exception:
+      return s
+
+  labels = [l.get("name") for l in issue.get("labels", []) if isinstance(l, dict) and l.get("name")]
+
+  with open(out_path, "w", encoding="utf-8") as f:
+    f.write(f"# PR #{pr_number}: {pr.get('title','').strip()}\n\n")
+    f.write(f"- Repo: {repo}\n")
+    f.write(f"- State: {pr.get('state','')}\n")
+    f.write(f"- Author: {pr.get('user',{}).get('login','')}\n")
+    if labels:
+      f.write(f"- Labels: {', '.join(labels)}\n")
+    f.write(f"- Base: {pr.get('base',{}).get('ref','')}\n")
+    f.write(f"- Head: {pr.get('head',{}).get('ref','')}\n")
+    f.write(f"- Created: {fmt_dt(pr.get('created_at'))}\n")
+    f.write(f"- Updated: {fmt_dt(pr.get('updated_at'))}\n\n")
+
+    body = (pr.get("body") or "").strip()
+    f.write("## Body\n\n")
+    f.write(body + "\n\n" if body else "(empty)\n\n")
+
+    f.write(f"## Comments ({len(comments)})\n\n")
+    for c in comments:
+      author = (c.get("user") or {}).get("login", "")
+      created = fmt_dt(c.get("created_at"))
+      f.write(f"### {author} @ {created}\n\n")
+      cb = (c.get("body") or "").strip()
+      f.write(cb + "\n\n" if cb else "(empty)\n\n")
+
+  print(out_path)
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
+`;
+  const issueScriptPath = path.join(issueScriptsDir, "get-issue-context");
+  const prScriptPath = path.join(prScriptsDir, "get-pr-context");
+  writeExecutable(issueScriptPath, issueScript);
+  writeExecutable(prScriptPath, prScript);
+
+  addPath(issueScriptsDir);
+  addPath(prScriptsDir);
+}
+
 // 检查文件是否存在且非空
 function fileExists(filePath: string): boolean {
   try {
@@ -409,15 +645,20 @@ function ensureCliAvailable(opencodeBin: string): void {
 
 // 构建 OpenCode/Codex 环境变量
 function buildOpenCodeEnv(userConfig: UserConfig): NodeJS.ProcessEnv {
+  const coder: Record<string, unknown> = {};
+  if (userConfig.model_name) {
+    coder.model = userConfig.model_name;
+  }
+  if (Number.isFinite(userConfig.max_tokens) && userConfig.max_tokens > 0) {
+    coder.maxTokens = userConfig.max_tokens;
+  }
+
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     OPENCODE_CONFIG_CONTENT: JSON.stringify({
       permission: "allow",
       agents: {
-        coder: {
-          model: userConfig.model_name,
-          maxTokens: userConfig.max_tokens,
-        },
+        coder,
       },
     }),
   };
@@ -432,9 +673,28 @@ function buildOpenCodeEnv(userConfig: UserConfig): NodeJS.ProcessEnv {
   if (codexKey) {
     env.CODEX_API_KEY = codexKey;
   }
+  const githubToken = core.getInput("github_token") || process.env.GITHUB_TOKEN;
+  if (githubToken) {
+    env.GITHUB_TOKEN = githubToken;
+    env.GH_TOKEN = githubToken;
+  }
   if (openaiBase) {
     env.OPENAI_API_BASE = openaiBase;
     env.OPENAI_BASE_URL = openaiBase; // 某些库使用这个变量名
+  }
+
+  const subjectNumber =
+    github.context.payload.pull_request?.number ||
+    github.context.payload.issue?.number;
+  const isPullRequestContext =
+    !!github.context.payload.pull_request ||
+    !!github.context.payload.issue?.pull_request;
+  if (subjectNumber) {
+    if (isPullRequestContext) {
+      env.PR_NUMBER = String(subjectNumber);
+    } else {
+      env.ISSUE_NUMBER = String(subjectNumber);
+    }
   }
 
   // Anthropic (Claude) 配置
@@ -485,6 +745,22 @@ function runOpenCode(
     ];
     if (userConfig.model_name) {
       args.push("--model", userConfig.model_name);
+    }
+    const reasoningEffort = (core.getInput("model_reasoning_effort") || "").trim();
+    if (reasoningEffort) {
+      args.push("--config", `model_reasoning_effort=${reasoningEffort}`);
+    }
+    const disableResponseStorage = (core.getInput("disable_response_storage") || "").trim();
+    if (disableResponseStorage) {
+      args.push("--config", `disable_response_storage=${disableResponseStorage}`);
+    }
+    const openaiBase = (core.getInput("openai_api_base") || process.env.OPENAI_API_BASE || "").trim();
+    if (openaiBase) {
+      args.push("--config", "model_provider=codex-for-me");
+      args.push("--config", "model_providers.codex-for-me.name=codex-for-me");
+      args.push("--config", `model_providers.codex-for-me.base_url=${openaiBase}`);
+      args.push("--config", "model_providers.codex-for-me.wire_api=responses");
+      args.push("--config", "model_providers.codex-for-me.env_key=OPENAI_API_KEY");
     }
     args.push(prompt);
     core.info(`Running ${opencodeBin} exec with ${promptFile}`.trim());
@@ -710,6 +986,7 @@ async function main(): Promise<void> {
     core.info(`Agent mode: ${config.mode}`);
 
     configureGit(config.mode);
+    installContextSkills();
 
     const round = await checkRoundLimit(config.maxRounds);
     core.setOutput("current_round", round);
