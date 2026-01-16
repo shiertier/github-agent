@@ -1156,16 +1156,36 @@ async function postProcessPRReviewer(round: number): Promise<void> {
       };
     const event = eventMap[response.verdict] || "COMMENT";
 
-    await withRetry("pulls.createReview", () =>
-      octokit.rest.pulls.createReview({
-        owner,
-        repo,
-        pull_number: prNumber,
-        body,
-        event,
-      })
-    );
-    core.info(`Posted PR review: ${event}`);
+    try {
+      await withRetry("pulls.createReview", () =>
+        octokit.rest.pulls.createReview({
+          owner,
+          repo,
+          pull_number: prNumber,
+          body,
+          event,
+        })
+      );
+      core.info(`Posted PR review: ${event}`);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      const isSelfReviewError = /own pull request/i.test(message);
+      if (isSelfReviewError && (event === "APPROVE" || event === "REQUEST_CHANGES")) {
+        core.warning(`Cannot submit ${event} on own PR; falling back to COMMENT`);
+        await withRetry("pulls.createReview(comment)", () =>
+          octokit.rest.pulls.createReview({
+            owner,
+            repo,
+            pull_number: prNumber,
+            body,
+            event: "COMMENT",
+          })
+        );
+        core.info("Posted PR review: COMMENT");
+      } else {
+        throw e;
+      }
+    }
 
     core.setOutput("requires_coding_agent", response.requires_coding_agent);
   }
