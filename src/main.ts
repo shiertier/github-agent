@@ -1221,7 +1221,7 @@ async function pushIssueCoderChangesAndCreatePr(
   owner: string,
   repo: string,
   issueNumber: number
-): Promise<{ branch?: string; prUrl?: string }> {
+): Promise<{ branch?: string; prUrl?: string; compareUrl?: string }> {
   const baseBranch = getDefaultBranch();
 
   commitAllChanges(`chore(agent): update for #${issueNumber}`);
@@ -1239,8 +1239,14 @@ async function pushIssueCoderChangesAndCreatePr(
 
   await gitPushWithRetry(branch, { forceWithLease: branch.startsWith("ai-") });
 
-  const pr = await ensureIssuePullRequest(octokit, owner, repo, issueNumber, branch, baseBranch);
-  return { branch, prUrl: pr?.url };
+  const compareUrl = `https://github.com/${owner}/${repo}/compare/${baseBranch}...${branch}?expand=1`;
+  try {
+    const pr = await ensureIssuePullRequest(octokit, owner, repo, issueNumber, branch, baseBranch);
+    return { branch, prUrl: pr?.url, compareUrl };
+  } catch (e) {
+    core.warning(`Failed to create PR via API: ${e instanceof Error ? e.message : String(e)}`);
+    return { branch, compareUrl };
+  }
 }
 
 // 后处理：Coder (Issue/PR)
@@ -1273,7 +1279,7 @@ async function postProcessCoder(
         if (result.prUrl) {
           prefix = `已创建 PR: ${result.prUrl}\n\n`;
         } else if (result.branch) {
-          prefix = `已推送分支: ${result.branch}\n\n`;
+          prefix = `已推送分支: ${result.branch}\n创建 PR: ${result.compareUrl || "(not available)"}\n\n`;
         }
       } catch (e) {
         core.warning(`Failed to push/create PR: ${e instanceof Error ? e.message : String(e)}`);
