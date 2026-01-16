@@ -94,6 +94,10 @@ get-issue-context <issue_number>
 
 Issue 编号从环境变量 `ISSUE_NUMBER` 获取。
 
+**Optional Prefetched Data**:
+
+- 如果存在 `./.github-agent-data/external/hf-trending-top10.txt`，表示维护者要求的 Hugging Face trending 已由 Action 预取完成（用于绕过 sandbox 无外网限制）。你必须直接使用该文件内容生成回复，不要再尝试联网抓取。
+
 **Output Artifacts**:
 
 - JSON 结果: `./.github-agent-data/issue-response.json`

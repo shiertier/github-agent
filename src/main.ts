@@ -930,6 +930,123 @@ function addPath(dir: string): void {
   }
 }
 
+function isMaintainerAssociation(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  return value === "OWNER" || value === "MEMBER" || value === "COLLABORATOR";
+}
+
+function isMaintainerActor(): boolean {
+  const repoOwner = github.context.repo.owner;
+  const actor = github.context.actor;
+  if (repoOwner && actor && repoOwner.toLowerCase() === actor.toLowerCase()) return true;
+
+  const payload = github.context.payload as any;
+  const assoc =
+    payload?.comment?.author_association ||
+    payload?.issue?.author_association ||
+    payload?.pull_request?.author_association;
+  return isMaintainerAssociation(assoc);
+}
+
+async function fetchJson(url: string, timeoutMs = 15000): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { "user-agent": "shiertier/github-agent" },
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} ${res.statusText}`.trim());
+    }
+    return (await res.json()) as unknown;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function extractHfTrendingIds(payload: unknown): string[] {
+  const data = payload as any;
+  const list = Array.isArray(data?.recentlyTrending) ? data.recentlyTrending : [];
+  const ids = list
+    .map((item: any) => item?.repoData?.id)
+    .filter((id: any) => typeof id === "string" && id.trim());
+  return ids;
+}
+
+async function prefetchHfTrendingIfNeeded(): Promise<void> {
+  if (!isMaintainerActor()) return;
+
+  const payload = github.context.payload as any;
+  const text = [
+    payload?.issue?.title,
+    payload?.issue?.body,
+    payload?.comment?.body,
+  ]
+    .filter((v) => typeof v === "string" && v.trim())
+    .join("\n");
+
+  const needsModel = /huggingface\.co\/api\/trending\?type=model/i.test(text);
+  const needsDataset = /huggingface\.co\/api\/trending\?type=dataset/i.test(text);
+  if (!needsModel && !needsDataset) return;
+
+  const outDir = path.join(process.cwd(), ".github-agent-data", "external");
+  ensureDir(outDir);
+
+  const fetchedAtUtc = new Date().toISOString();
+  const modelUrl = "https://huggingface.co/api/trending?type=model";
+  const datasetUrl = "https://huggingface.co/api/trending?type=dataset";
+
+  let modelIds: string[] = [];
+  let datasetIds: string[] = [];
+  const errors: Record<string, string> = {};
+
+  if (needsModel) {
+    try {
+      const json = await fetchJson(modelUrl);
+      fs.writeFileSync(path.join(outDir, "hf-trending-model.json"), JSON.stringify(json, null, 2), "utf-8");
+      modelIds = extractHfTrendingIds(json).slice(0, 10);
+    } catch (e) {
+      errors.model = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  if (needsDataset) {
+    try {
+      const json = await fetchJson(datasetUrl);
+      fs.writeFileSync(path.join(outDir, "hf-trending-dataset.json"), JSON.stringify(json, null, 2), "utf-8");
+      datasetIds = extractHfTrendingIds(json).slice(0, 10);
+    } catch (e) {
+      errors.dataset = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push(`UTC: ${fetchedAtUtc}`);
+  lines.push("");
+  lines.push("Models Top10:");
+  if (modelIds.length > 0) {
+    lines.push(...modelIds);
+  } else if (needsModel) {
+    lines.push(`(fetch failed: ${errors.model || "unknown error"})`);
+  } else {
+    lines.push("(not requested)");
+  }
+  lines.push("");
+  lines.push("Datasets Top10:");
+  if (datasetIds.length > 0) {
+    lines.push(...datasetIds);
+  } else if (needsDataset) {
+    lines.push(`(fetch failed: ${errors.dataset || "unknown error"})`);
+  } else {
+    lines.push("(not requested)");
+  }
+  lines.push("");
+
+  fs.writeFileSync(path.join(outDir, "hf-trending-top10.txt"), lines.join("\n"), "utf-8");
+  core.info(`Prefetched HF trending into ${path.join(outDir, "hf-trending-top10.txt")}`);
+}
+
 function installCodexCli(): void {
   core.info("codex not found, installing @openai/codex...");
   execSync("npm install -g @openai/codex", { stdio: "inherit" });
@@ -1673,6 +1790,10 @@ async function main(): Promise<void> {
 
     const round = await checkRoundLimit(config.maxRounds);
     core.setOutput("current_round", round);
+
+    if (config.mode === "issue-chatter") {
+      await prefetchHfTrendingIfNeeded();
+    }
 
     // 运行 Agent
     runOpenCode(config.promptFile, config.userConfig);
