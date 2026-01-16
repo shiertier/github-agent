@@ -191,6 +191,11 @@ function detectAgentMode(): AgentConfig {
   const payload = github.context.payload;
   const userConfig = loadUserConfig();
 
+  function isCoderCommand(text: string): boolean {
+    if (!text) return false;
+    return /(^|\n)\s*@coder\b/.test(text);
+  }
+
   // Issue 事件
   if (eventName === "issues") {
     return {
@@ -206,7 +211,7 @@ function detectAgentMode(): AgentConfig {
   if (eventName === "issue_comment") {
     const isPR = !!payload.issue?.pull_request;
     const body = payload.comment?.body || "";
-    const hasCoder = body.includes("@coder");
+    const hasCoder = isCoderCommand(body);
 
     if (isPR) {
       return {
@@ -371,6 +376,14 @@ function hasUncommittedChanges(): boolean {
 function commitAllChanges(message: string): boolean {
   if (!hasUncommittedChanges()) return false;
   git(["add", "-A"]);
+  // Never commit agent runtime artifacts.
+  try {
+    git(["reset", "-q", "--", ".github-agent-data"]);
+  } catch {
+    // Best effort: ignore if path doesn't exist.
+  }
+  const staged = gitTryOutput(["diff", "--cached", "--name-only"]);
+  if (!staged) return false;
   try {
     git(["commit", "-m", message]);
     return true;
