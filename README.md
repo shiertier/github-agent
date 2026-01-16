@@ -52,9 +52,12 @@ permissions:
 jobs:
   agent:
     if: |
-      github.actor != 'github-actions[bot]' &&
       github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'issue_comment' || !endsWith(github.actor, '[bot]'))
+      (
+        github.event_name != 'issue_comment' ||
+        !endsWith(github.actor, '[bot]') ||
+        contains(github.event.comment.body, '<!-- agent-trigger:coder -->')
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +73,8 @@ jobs:
 ```
 
 > 默认使用 `codex` 并在运行时自动安装；如需 `opencode`，在 `with` 中设置 `opencode_bin: opencode`。
+
+> 说明：当 Issue Chatter/PR Reviewer 判断需要写代码时，会在回复里自动带 `@coder ...` 并附带 `<!-- agent-trigger:coder -->`，用于触发后续的 Coder run；因此 workflow 的 `if` 条件不要把 bot comment 一刀切过滤掉。
 
 ### 2. 配置 Secrets
 

@@ -85,15 +85,6 @@ function validateResponseLanguage(value: string | undefined): "en" | "zh-CN" | u
   return undefined;
 }
 
-function parseBooleanInput(value: string | undefined): boolean | undefined {
-  if (!value) return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return undefined;
-  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
-  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
-  return undefined;
-}
-
 // 加载配置（优先级：action inputs > env vars > toml file）
 function loadUserConfig(): UserConfig {
   // 默认值
@@ -102,7 +93,7 @@ function loadUserConfig(): UserConfig {
     max_tokens: 4096,
     fallback_models: [],
     response_language: "en",
-    max_rounds: 3,
+    max_rounds: 8,
   };
 
   // 1. 尝试从 .github_agent.toml 加载
@@ -1100,11 +1091,22 @@ async function postProcessIssueChatter(round: number): Promise<void> {
   const issueNumber = github.context.payload.issue?.number;
   if (!issueNumber) return;
 
+  const jsonFile = ".github-agent-data/issue-response.json";
+  const response = fileExists(jsonFile) ? JSON.parse(fs.readFileSync(jsonFile, "utf-8")) : null;
+  const requiresCoder = !!response?.requires_coding_agent;
+  const issueType = typeof response?.issue_type === "string" ? response.issue_type.toLowerCase() : "";
+  const coderCommand = issueType === "bug" ? "fix" : "feat";
+  const issueTitle = (github.context.payload.issue?.title || "").trim();
+
   // 发布回复
   const replyFile = ".github-agent-data/issue-reply.md";
   if (fileExists(replyFile)) {
     const replyContent = fs.readFileSync(replyFile, "utf-8");
-    const body = `${replyContent}\n\n<!-- agent:issue-chatter-agent -->\n<!-- agent-round:${round} -->`;
+    const coderBlock = requiresCoder
+      ? `\n\n@coder ${coderCommand} #${issueNumber}\n\n> 目标：处理 Issue #${issueNumber}${issueTitle ? `: ${issueTitle}` : ""}\n> 交付：创建 PR，描述包含 \`Closes #${issueNumber}\`。\n`
+      : "";
+    const triggerMarker = requiresCoder ? "\n<!-- agent-trigger:coder -->" : "";
+    const body = `${replyContent}${coderBlock}\n\n<!-- agent:issue-chatter-agent -->\n<!-- agent-round:${round} -->${triggerMarker}`;
 
     await withRetry("issues.createComment", () =>
       octokit.rest.issues.createComment({
@@ -1118,10 +1120,7 @@ async function postProcessIssueChatter(round: number): Promise<void> {
   }
 
   // 处理 JSON 响应
-  const jsonFile = ".github-agent-data/issue-response.json";
-  if (fileExists(jsonFile)) {
-    const response = JSON.parse(fs.readFileSync(jsonFile, "utf-8"));
-
+  if (response) {
     // 添加标签
     if (response.labels?.add?.length > 0) {
       await withRetry("issues.addLabels", () =>
@@ -1232,6 +1231,41 @@ async function postProcessPRReviewer(round: number): Promise<void> {
     }
 
     core.setOutput("requires_coding_agent", response.requires_coding_agent);
+
+    if (response.requires_coding_agent) {
+      const keyIssues = Array.isArray(response.key_issues) ? response.key_issues : [];
+      const issueLines = keyIssues.slice(0, 5).map((issue: any) => {
+        const file = typeof issue?.file === "string" ? issue.file : "";
+        const startLine = Number.isFinite(issue?.start_line) ? issue.start_line : undefined;
+        const title = typeof issue?.title === "string" ? issue.title : "";
+        const severity = typeof issue?.severity === "string" ? issue.severity : "";
+        const location = file ? `${file}${startLine ? `:${startLine}` : ""}` : "(unknown)";
+        const parts = [location, title].filter(Boolean).join(" ");
+        const suffix = severity ? ` [${severity}]` : "";
+        return `> - ${parts}${suffix}`.trim();
+      });
+
+      const coderCommentBody = [
+        "@coder",
+        "",
+        "> 按下面这些点修复并 push 到当前 PR 分支：",
+        ...(issueLines.length > 0 ? issueLines : ["> - N/A"]),
+        "",
+        "<!-- agent:pr-reviewer-agent -->",
+        `<!-- agent-round:${round} -->`,
+        "<!-- agent-trigger:coder -->",
+      ].join("\n");
+
+      await withRetry("issues.createComment(pr-coder-trigger)", () =>
+        octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: prNumber,
+          body: coderCommentBody,
+        })
+      );
+      core.info("Posted pr-coder trigger comment");
+    }
   }
 }
 
@@ -1297,8 +1331,7 @@ async function pushIssueCoderChangesAndCreatePr(
     return {};
   }
 
-  const chatterIssueType = readIssueChatterResponse()?.issue_type;
-  const desiredBranch = `${inferIssueBranchPrefix(chatterIssueType)}/issue-${issueNumber}-auto`;
+  const desiredBranch = `${inferIssueBranchPrefix()}/issue-${issueNumber}-auto`;
   const branch = ensureNonDefaultBranch(baseBranch, desiredBranch);
 
   await gitPushWithRetry(branch, { forceWithLease: branch.startsWith("ai-") });
@@ -1380,29 +1413,6 @@ async function postProcess(config: AgentConfig, round: number): Promise<void> {
   }
 }
 
-type IssueChatterResponse = {
-  issue_type?: string;
-  suggested_action?: string;
-  requires_coding_agent?: boolean;
-};
-
-function readIssueChatterResponse(): IssueChatterResponse | null {
-  const jsonFile = ".github-agent-data/issue-response.json";
-  if (!fileExists(jsonFile)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(jsonFile, "utf-8")) as IssueChatterResponse;
-  } catch (e) {
-    core.warning(`Failed to parse ${jsonFile}: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
-  }
-}
-
-function isAutoIssueCoderEnabled(): boolean {
-  const parsed = parseBooleanInput(core.getInput("auto_coder"));
-  if (parsed === undefined) return true;
-  return parsed;
-}
-
 function removeFileIfExists(filePath: string): void {
   try {
     if (fs.existsSync(filePath)) {
@@ -1413,75 +1423,14 @@ function removeFileIfExists(filePath: string): void {
   }
 }
 
-async function runAutoIssueCoder(
-  userConfig: UserConfig,
-  round: number,
-  chatterResponse: IssueChatterResponse
-): Promise<void> {
-  const issueNumber = github.context.payload.issue?.number;
-  const issueTitle = (github.context.payload.issue?.title || "").trim();
-  if (!issueNumber) return;
-
-  core.info("Auto-running issue-coder based on issue-chatter decision");
-
-  // Preserve chatter reply before coder overwrites issue-reply.md
-  const chatterReplyFile = ".github-agent-data/issue-reply.md";
-  if (fileExists(chatterReplyFile)) {
-    try {
-      const chatterReply = fs.readFileSync(chatterReplyFile, "utf-8");
-      fs.writeFileSync(".github-agent-data/issue-chatter-reply.md", chatterReply, "utf-8");
-    } catch (e) {
-      core.warning(`Failed to preserve ${chatterReplyFile}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    removeFileIfExists(chatterReplyFile);
-  }
-
-  const coderMode: AgentMode = "issue-coder";
-  const coderPromptFile = resolvePromptPath("prompts/issue-coder.md");
-  const coderConfig: AgentConfig = {
-    mode: coderMode,
-    promptFile: coderPromptFile,
-    contextFile: ".github-agent-data/issue-context.md",
-    maxRounds: userConfig.max_rounds,
-    userConfig,
-  };
-
-  configureGit(coderMode);
-
-  // Ensure stale outputs don't trick verification.
-  for (const outputFile of EXPECTED_OUTPUTS[coderMode]) {
-    removeFileIfExists(outputFile);
-  }
-
-  const basePrompt = fs.readFileSync(coderPromptFile, "utf-8");
-  const issueType = (chatterResponse.issue_type || "").toLowerCase();
-  const coderCommand = issueType === "bug" ? "fix" : "feat";
-  const instruction = [
-    "# Manager Instruction (auto-run)",
-    "Issue Chatter 判定需要写代码，自动触发 Issue Coder。",
-    "",
-    `@coder ${coderCommand} #${issueNumber}`,
-    "",
-    "> 目标：",
-    `> 解决 Issue #${issueNumber}${issueTitle ? `: ${issueTitle}` : ""}。`,
-    "> 交付：",
-    `> - 创建一个 PR，并在 PR 描述里包含 \`Closes #${issueNumber}\`。`,
-    "> - 变更尽量小，保持生产可用。",
-    "",
-  ].join("\n");
-  const combinedPrompt = `${basePrompt}\n\n${instruction}`;
-
-  runOpenCode(coderPromptFile, userConfig, false, combinedPrompt);
-  verifyAndResume(coderConfig, 5, combinedPrompt);
-  await postProcessCoder(coderMode, round);
-}
-
 // 主函数
 async function main(): Promise<void> {
   try {
     if (github.context.eventName === "issue_comment") {
       const body = github.context.payload.comment?.body || "";
-      if (body.includes("<!-- agent:") && body.includes("<!-- agent-round:")) {
+      const isAgentComment = body.includes("<!-- agent:") && body.includes("<!-- agent-round:");
+      const isCoderTrigger = body.includes("<!-- agent-trigger:coder -->");
+      if (isAgentComment && !isCoderTrigger) {
         core.info("Skipping agent-generated issue_comment event");
         return;
       }
@@ -1504,16 +1453,6 @@ async function main(): Promise<void> {
 
     // 后处理
     await postProcess(config, round);
-
-    if (
-      config.mode === "issue-chatter" &&
-      isAutoIssueCoderEnabled()
-    ) {
-      const response = readIssueChatterResponse();
-      if (response?.requires_coding_agent) {
-        await runAutoIssueCoder(config.userConfig, round, response);
-      }
-    }
 
     core.info("Agent completed successfully");
   } catch (error) {
